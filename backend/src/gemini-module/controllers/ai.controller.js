@@ -1,4 +1,4 @@
-import { GeminiServiceError, processScannedDataWithAI } from '../services/gemini.service.js';
+import { GeminiServiceError, interpretUserTurnWithAI } from '../services/gemini.service.js';
 
 function sendAiError(res, error) {
   console.error('Controller Error:', error);
@@ -13,57 +13,56 @@ function sendAiError(res, error) {
   });
 }
 
-export const handleScannedData = async (req, res) => {
+function sanitizeConversation(conversation) {
+  if (conversation === undefined) return [];
+  if (!Array.isArray(conversation) || conversation.length > 10) return null;
+
+  return conversation.map((item) => {
+    const role = item?.role === 'assistant' ? 'assistant' : item?.role === 'user' ? 'user' : '';
+    const text = typeof item?.text === 'string' ? item.text.trim().slice(0, 500) : '';
+    return { role, text };
+  }).filter((item) => item.role && item.text);
+}
+
+export const handleAssistantTurn = async (req, res) => {
   try {
-    const { query, textContext, extractedLinks, pageUrl } = req.body;
+    const { query, conversation, pageUrl, textContext } = req.body;
 
     if (typeof query !== 'string' || !query.trim()) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Query is required.' 
+      return res.status(400).json({
+        success: false,
+        message: 'Query is required.',
       });
     }
     if (query.length > 1_000) {
       return res.status(400).json({ success: false, message: 'Query is too long.' });
     }
-    if (textContext !== undefined && (typeof textContext !== 'string' || textContext.length > 20_000)) {
-      return res.status(400).json({ success: false, message: 'Page text is invalid or too long.' });
-    }
-    if (extractedLinks !== undefined && (!Array.isArray(extractedLinks) || extractedLinks.length > 100)) {
-      return res.status(400).json({ success: false, message: 'Links are invalid or too numerous.' });
+
+    const safeConversation = sanitizeConversation(conversation);
+    if (safeConversation === null) {
+      return res.status(400).json({ success: false, message: 'Conversation history is invalid.' });
     }
     if (pageUrl !== undefined && (typeof pageUrl !== 'string' || pageUrl.length > 2_048)) {
       return res.status(400).json({ success: false, message: 'Page URL is invalid.' });
     }
+    if (textContext !== undefined && (typeof textContext !== 'string' || textContext.length > 4_000)) {
+      return res.status(400).json({ success: false, message: 'Page text is invalid or too long.' });
+    }
 
-    const safeLinks = (extractedLinks || []).map((link) => ({
-      text: typeof link?.text === 'string' ? link.text.slice(0, 500) : '',
-      url: typeof link?.url === 'string' ? link.url.slice(0, 2_048) : '',
-    })).filter((link) => {
-      try {
-        const url = new URL(link.url);
-        return link.text && (url.protocol === 'http:' || url.protocol === 'https:');
-      } catch {
-        return false;
-      }
-    });
-
-    // Call service to interact with Gemini API
-    const answer = await processScannedDataWithAI({
+    const data = await interpretUserTurnWithAI({
       query: query.trim(),
+      conversation: safeConversation,
+      pageUrl,
       textContext,
-      extractedLinks: safeLinks,
-      pageUrl
     });
 
-    // Send response back to Frontend / Chrome Extension
+    data.personName = typeof data.personName === 'string' ? data.personName.slice(0, 120) : '';
+    data.companyName = typeof data.companyName === 'string' ? data.companyName.slice(0, 120) : '';
+
     return res.status(200).json({
       success: true,
-      data: {
-        answer
-      }
+      data,
     });
-
   } catch (error) {
     return sendAiError(res, error);
   }

@@ -1,53 +1,376 @@
-// ==========================================
-// 1. DATA EXTRACTION LOGIC
-// ==========================================
-function extractPageData() {
-  const visibleText = document.body.innerText.substring(0, 6000);
-  const extractedLinks = Array.from(document.querySelectorAll('a'))
-    .map(a => ({ text: a.innerText.trim(), url: a.href }))
-    .filter(link => link.text.length > 0 && link.url.startsWith('http'))
-    .slice(0, 50);
+const API_URL = 'http://127.0.0.1:3000/api/v1/ai/scan';
+const STATE_KEY = 'ask-ai-linkedin-assistant';
+const HIRING_RE = /hiring|we'?re hiring|looking for|join (our|my|the) team|open role|job opening|vacancy|recruiting|i'?m hiring|opportunity/i;
 
-  return { textContext: visibleText, links: extractedLinks };
+function isLinkedInHost() {
+  return /(^|\.)linkedin\.com$/i.test(window.location.hostname);
 }
 
-function renderFormattedMessage(container, answer, allowedUrls) {
-  const messageNode = document.createElement('div');
-  messageNode.className = 'ai-chat-bubble assistant';
+function saveState(state) {
+  sessionStorage.setItem(STATE_KEY, JSON.stringify({
+    ...state,
+    ts: Date.now(),
+  }));
+}
 
-  const label = document.createElement('span');
-  label.className = 'ai-message-label';
-  label.textContent = 'Ask AI';
-  messageNode.append(label);
-
-  const content = document.createElement('div');
-  content.className = 'ai-message-content';
-
-  const urlPattern = /https?:\/\/[^\s<>"']+/g;
-  let lastIndex = 0;
-
-  for (const match of answer.matchAll(urlPattern)) {
-    content.append(document.createTextNode(answer.slice(lastIndex, match.index)));
-    if (allowedUrls.has(match[0])) {
-      const link = document.createElement('a');
-      link.href = match[0];
-      link.textContent = match[0];
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      content.append(link);
-    } else {
-      content.append(document.createTextNode(match[0]));
+function readState() {
+  try {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return { messages: [], panelOpen: false };
+    const state = JSON.parse(raw);
+    if (!state || Date.now() - Number(state.ts || 0) > 20 * 60 * 1000) {
+      return { messages: [], panelOpen: false };
     }
-    lastIndex = match.index + match[0].length;
+    return {
+      messages: Array.isArray(state.messages) ? state.messages.slice(-40) : [],
+      panelOpen: Boolean(state.panelOpen),
+    };
+  } catch {
+    return { messages: [], panelOpen: false };
   }
-  content.append(document.createTextNode(answer.slice(lastIndex)));
-  messageNode.append(content);
-  container.appendChild(messageNode);
 }
 
-// ==========================================
-// 2. INJECT FLOATING WIDGET (UI)
-// ==========================================
+function updateState(patch) {
+  const next = { ...readState(), ...patch };
+  saveState(next);
+  return next;
+}
+
+function firstText(root, selectors) {
+  for (const selector of selectors) {
+    const node = root.querySelector(selector);
+    const text = node?.innerText?.trim() || node?.textContent?.trim();
+    if (text) return text.replace(/\s+/g, ' ');
+  }
+  return '';
+}
+
+function firstHref(root, selectors) {
+  for (const selector of selectors) {
+    const node = root.querySelector(selector);
+    const href = node?.href || node?.getAttribute?.('href');
+    if (href) return href;
+  }
+  return '';
+}
+
+function normalizeLinkedInUrl(href) {
+  try {
+    const url = new URL(href, window.location.href);
+    if (!url.hostname.includes('linkedin.com')) return '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
+function scrapeVisibleHiringPosts() {
+  const cards = document.querySelectorAll([
+    'div.feed-shared-update-v2',
+    'div[data-urn*="activity"]',
+    'article.feed-shared-update-v2',
+  ].join(','));
+  const posts = [];
+  const seen = new Set();
+
+  cards.forEach((element) => {
+    const author = firstText(element, [
+      '.update-components-actor__name span[aria-hidden="true"]',
+      '.update-components-actor__name',
+      '.feed-shared-actor__name',
+    ]);
+    const text = firstText(element, [
+      '.update-components-text',
+      '.feed-shared-update-v2__description',
+      '.feed-shared-text',
+      '.break-words',
+    ]);
+    const link = normalizeLinkedInUrl(firstHref(element, [
+      'a[href*="/feed/update/"]',
+      'a[href*="/posts/"]',
+    ]));
+    const blob = `${author} ${text}`;
+    if (!text || !HIRING_RE.test(blob)) return;
+    const key = link || `${author}|${text.slice(0, 80)}`;
+    if (seen.has(key) || posts.length >= 12) return;
+    seen.add(key);
+    posts.push({
+      author: author || 'LinkedIn member',
+      text: text.slice(0, 420),
+      link,
+    });
+  });
+
+  return posts;
+}
+
+function hideWelcomeScreen() {
+  const welcomeScreen = document.getElementById('ai-welcome-screen');
+  if (welcomeScreen) welcomeScreen.style.display = 'none';
+}
+
+function openPanel() {
+  const panel = document.getElementById('ai-copilot-panel');
+  const btn = document.getElementById('ai-copilot-btn');
+  if (!panel) return;
+  panel.style.display = 'flex';
+  btn?.classList.add('is-open');
+  updateState({ panelOpen: true });
+}
+
+function setBusy(isBusy) {
+  const sendButton = document.getElementById('ai-send-btn');
+  const queryInput = document.getElementById('ai-query-input');
+  const chatFlow = document.getElementById('ai-chat-flow');
+  if (sendButton) sendButton.disabled = isBusy;
+  if (queryInput) queryInput.disabled = isBusy;
+  chatFlow?.toggleAttribute('aria-busy', isBusy);
+}
+
+function showLoading(text) {
+  document.getElementById('ai-active-loading')?.remove();
+  const chatFlow = document.getElementById('ai-chat-flow');
+  if (!chatFlow) return;
+  const loadingBubble = document.createElement('div');
+  loadingBubble.className = 'ai-loading-indicator';
+  loadingBubble.id = 'ai-active-loading';
+  loadingBubble.innerHTML = `<span class="ai-thinking-dots"><i></i><i></i><i></i></span> ${text}`;
+  chatFlow.appendChild(loadingBubble);
+  chatFlow.scrollTop = chatFlow.scrollHeight;
+}
+
+function appendNode(node) {
+  const chatFlow = document.getElementById('ai-chat-flow');
+  if (!chatFlow || !node) return;
+  chatFlow.appendChild(node);
+  chatFlow.scrollTop = chatFlow.scrollHeight;
+}
+
+function textBubble(text, className) {
+  const bubble = document.createElement('div');
+  bubble.className = `ai-chat-bubble ${className}`;
+  bubble.textContent = text;
+  return bubble;
+}
+
+function resultList(label, items, renderItem) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ai-chat-bubble assistant ai-result-list';
+  const heading = document.createElement('span');
+  heading.className = 'ai-message-label';
+  heading.textContent = label;
+  wrap.append(heading);
+  items.forEach((item) => wrap.append(renderItem(item)));
+  return wrap;
+}
+
+function jobCard(job) {
+  const card = document.createElement('article');
+  card.className = 'ai-result-card';
+  const title = document.createElement('a');
+  title.className = 'ai-result-title';
+  title.href = job.link;
+  title.target = '_blank';
+  title.rel = 'noopener noreferrer';
+  title.textContent = job.title;
+  const meta = document.createElement('div');
+  meta.className = 'ai-result-meta';
+  meta.textContent = job.company;
+  card.append(title, meta);
+  return card;
+}
+
+function postCard(post) {
+  const card = document.createElement('article');
+  card.className = 'ai-result-card';
+  const title = document.createElement(post.link ? 'a' : 'strong');
+  title.className = 'ai-result-title';
+  title.textContent = post.author;
+  if (post.link) {
+    title.href = post.link;
+    title.target = '_blank';
+    title.rel = 'noopener noreferrer';
+  }
+  const text = document.createElement('p');
+  text.className = 'ai-result-text';
+  text.textContent = post.text;
+  card.append(title, text);
+  return card;
+}
+
+function profileCard(person) {
+  const card = document.createElement('article');
+  card.className = 'ai-result-card';
+  const title = document.createElement('a');
+  title.className = 'ai-result-title';
+  title.href = person.profileLink;
+  title.target = '_blank';
+  title.rel = 'noopener noreferrer';
+  title.textContent = person.name;
+  const meta = document.createElement('div');
+  meta.className = 'ai-result-meta';
+  meta.textContent = [person.headline, person.location].filter(Boolean).join(' · ') || person.profileLink;
+  card.append(title, meta);
+  return card;
+}
+
+function renderStoredMessage(message) {
+  if (!message) return;
+  if (message.type === 'user') {
+    appendNode(textBubble(message.text, 'user'));
+    return;
+  }
+  if (message.type === 'assistant') {
+    appendNode(textBubble(message.text, 'assistant'));
+    return;
+  }
+  if (message.type === 'error') {
+    appendNode(textBubble(message.text, 'assistant error'));
+    return;
+  }
+  if (message.type === 'jobs' && message.items?.length) {
+    appendNode(resultList(`${message.items.length} jobs`, message.items, jobCard));
+    return;
+  }
+  if (message.type === 'posts' && message.items?.length) {
+    appendNode(resultList(`${message.items.length} posts`, message.items, postCard));
+    return;
+  }
+  if (message.type === 'people' && message.items?.length) {
+    appendNode(resultList(`${message.items.length} people / recruiter profiles`, message.items, profileCard));
+    return;
+  }
+  if (message.type === 'companies' && message.items?.length) {
+    appendNode(resultList(`${message.items.length} company profiles`, message.items, profileCard));
+  }
+}
+
+function pushMessage(message) {
+  const state = readState();
+  state.messages = [...state.messages, message].slice(-40);
+  saveState(state);
+  renderStoredMessage(message);
+}
+
+function restoreChat() {
+  const chatFlow = document.getElementById('ai-chat-flow');
+  if (!chatFlow || chatFlow.dataset.restored === '1') return;
+  const state = readState();
+  if (!state.messages.length) return;
+  hideWelcomeScreen();
+  chatFlow.dataset.restored = '1';
+  state.messages.forEach(renderStoredMessage);
+  if (state.panelOpen) openPanel();
+}
+
+function conversationForApi() {
+  return readState().messages
+    .filter((message) => message.type === 'user' || message.type === 'assistant')
+    .slice(-8)
+    .map((message) => ({
+      role: message.type === 'user' ? 'user' : 'assistant',
+      text: String(message.text || '').slice(0, 500),
+    }));
+}
+
+function lightPageContext() {
+  try {
+    return (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 2500);
+  } catch {
+    return '';
+  }
+}
+
+function mergePosts(primary, extra) {
+  const seen = new Set();
+  const merged = [];
+  [...(extra || []), ...(primary || [])].forEach((post) => {
+    const key = post.link || `${post.author}|${(post.text || '').slice(0, 80)}`;
+    if (!post.text || seen.has(key)) return;
+    seen.add(key);
+    merged.push(post);
+  });
+  return merged.slice(0, 20);
+}
+
+async function fetchLinkedInResults(data) {
+  const response = await chrome.runtime.sendMessage({
+    type: 'ASK_AI_LINKEDIN',
+    intent: data.intent,
+    keywords: data.keywords,
+    location: data.location,
+    personName: data.personName,
+    companyName: data.companyName,
+  });
+  return response || { ok: false, error: 'No response from LinkedIn helper.' };
+}
+
+function showLinkedInResults(payload, intent) {
+  const jobs = payload.jobs || [];
+  const posts = payload.posts || [];
+  const people = payload.people || [];
+  const companies = payload.companies || [];
+
+  if (jobs.length) pushMessage({ type: 'jobs', items: jobs });
+  if (posts.length) pushMessage({ type: 'posts', items: posts });
+  if (people.length) pushMessage({ type: 'people', items: people });
+  if (companies.length) pushMessage({ type: 'companies', items: companies });
+
+  if (jobs.length || posts.length || people.length || companies.length) return;
+
+  if (intent === 'person_posts') {
+    pushMessage({
+      type: 'error',
+      text: 'Us recruiter ki posts silently load nahi ho sakin. LinkedIn login check karo, naam spelling confirm karo.',
+    });
+    return;
+  }
+  pushMessage({
+    type: 'error',
+    text: 'LinkedIn se results nahi mil sake. Page pe login hona zaroori hai — search bar use nahi ki gayi.',
+  });
+}
+
+async function fulfillLinkedInRequest(data) {
+  showLoading('LinkedIn se silently results nikaal raha hoon — search bar nahi khulegi…');
+  try {
+    const payload = await fetchLinkedInResults(data);
+    document.getElementById('ai-active-loading')?.remove();
+
+    if (!payload.ok) {
+      const visiblePosts = data.intent === 'chat' ? [] : scrapeVisibleHiringPosts();
+      if (visiblePosts.length) {
+        pushMessage({ type: 'posts', items: visiblePosts });
+        pushMessage({
+          type: 'assistant',
+          text: 'API se full search nahi hui, is liye current feed ki hiring posts dikhai hain. Profile links ke liye LinkedIn login confirm karo.',
+        });
+        return;
+      }
+      pushMessage({ type: 'error', text: payload.error || 'LinkedIn silent search fail ho gayi.' });
+      return;
+    }
+
+    if (data.intent === 'latest_posts' || data.intent === 'job_seeker' || data.intent === 'person_posts') {
+      payload.posts = mergePosts(payload.posts, scrapeVisibleHiringPosts());
+    }
+
+    showLinkedInResults(payload, data.intent);
+  } catch (error) {
+    document.getElementById('ai-active-loading')?.remove();
+    const visiblePosts = scrapeVisibleHiringPosts();
+    if (visiblePosts.length) {
+      pushMessage({ type: 'posts', items: visiblePosts });
+      return;
+    }
+    pushMessage({
+      type: 'error',
+      text: error?.message || 'Silent LinkedIn fetch fail. Extension reload karke login page se try karo.',
+    });
+  }
+}
+
 function injectAIWidget() {
   if (document.getElementById('ai-copilot-btn')) return;
 
@@ -69,7 +392,7 @@ function injectAIWidget() {
         <div class="ai-logo ai-logo-brand" aria-hidden="true"><i></i></div>
         <div>
           <div class="ai-header-title">Ask AI</div>
-          <div class="ai-header-subtitle"><span></span> Page-aware assistant</div>
+          <div class="ai-header-subtitle"><span></span> Silent LinkedIn fetch</div>
         </div>
       </div>
       <button class="ai-close-btn" id="ai-close-btn" type="button" aria-label="Close Ask AI">×</button>
@@ -78,19 +401,20 @@ function injectAIWidget() {
     <div class="ai-body" id="ai-chat-flow">
       <div class="ai-welcome-screen" id="ai-welcome-screen">
         <div class="ai-welcome-orb">✦</div>
-        <p class="ai-eyebrow">YOUR SMART PAGE COMPANION</p>
-        <h2>What would you like<br/><span>to discover today?</span></h2>
-        <p class="ai-welcome-copy">I can read this page, surface useful details, and help you move faster.</p>
+        <p class="ai-eyebrow">NO SEARCH BAR TYPING</p>
+        <h2>Chat, posts, jobs,<br/><span>and profile links</span></h2>
+        <p class="ai-welcome-copy">Jo search tum khud type kar sakte ho woh yahan manually nahi hogi. Main LinkedIn se silently posts, jobs, aur hiring profiles nikaal ke yahin dunga.</p>
         <div class="ai-chips-container">
-          <button class="ai-chip" type="button" data-query="Summarize the main content of this page"><span class="ai-chip-icon purple">✎</span><span><strong>Summarize this page</strong><small>Get the essential points</small></span><b>›</b></button>
-          <button class="ai-chip" type="button" data-query="Extract all job titles and links"><span class="ai-chip-icon amber">▣</span><span><strong>Extract jobs & links</strong><small>Find useful opportunities</small></span><b>›</b></button>
+          <button class="ai-chip" type="button" data-query="Latest hiring posts nikaal do"><span class="ai-chip-icon purple">✎</span><span><strong>Latest hiring posts</strong><small>Without using LinkedIn search</small></span><b>›</b></button>
+          <button class="ai-chip" type="button" data-query="I have 2 years exp, I want a Node.js job in Karachi"><span class="ai-chip-icon amber">▣</span><span><strong>Find work for me</strong><small>Jobs + posts + hiring profiles</small></span><b>›</b></button>
+          <button class="ai-chip" type="button" data-query="I need a Node.js developer in Karachi"><span class="ai-chip-icon blue">✦</span><span><strong>Find candidates</strong><small>Matching profile links</small></span><b>›</b></button>
         </div>
       </div>
     </div>
     
     <div class="ai-footer">
       <form class="ai-input-wrapper" id="ai-query-form">
-          <textarea id="ai-query-input" rows="1" maxlength="1000" placeholder="Ask anything about this page..."></textarea>
+          <textarea id="ai-query-input" rows="1" maxlength="1000" placeholder="Recruiter ka naam, latest posts, ya job requirement..."></textarea>
           <div class="ai-input-actions">
           <span class="ai-model-tag"><i></i> AI powered</span>
           <span class="ai-keyboard-hint">Enter to send</span>
@@ -106,6 +430,7 @@ function injectAIWidget() {
     const open = shouldOpen ?? !isOpen;
     panel.style.display = open ? 'flex' : 'none';
     btn.classList.toggle('is-open', open);
+    updateState({ panelOpen: open });
     if (open) requestAnimationFrame(() => document.getElementById('ai-query-input').focus());
     else btn.focus();
   };
@@ -113,8 +438,7 @@ function injectAIWidget() {
   btn.addEventListener('click', togglePanel);
   document.getElementById('ai-close-btn').addEventListener('click', () => togglePanel(false));
 
-  // Quick Chips Click
-  document.querySelectorAll('.ai-chip').forEach(chip => {
+  document.querySelectorAll('.ai-chip').forEach((chip) => {
     chip.addEventListener('click', (e) => {
       const query = e.currentTarget.getAttribute('data-query');
       document.getElementById('ai-query-input').value = query;
@@ -122,7 +446,6 @@ function injectAIWidget() {
     });
   });
 
-  // Submit Triggers
   document.getElementById('ai-send-btn').addEventListener('click', handleAISearch);
   document.getElementById('ai-query-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -140,94 +463,64 @@ function injectAIWidget() {
   });
 }
 
-// ==========================================
-// 3. HANDLE CHAT FLOW & API
-// ==========================================
 async function handleAISearch() {
   const queryInput = document.getElementById('ai-query-input');
-  const chatFlow = document.getElementById('ai-chat-flow');
   const userQuery = queryInput.value.trim();
-
   if (!userQuery) return;
 
-  // 1. Hide Welcome Screen on First Query
-  const welcomeScreen = document.getElementById('ai-welcome-screen');
-  if (welcomeScreen) welcomeScreen.style.display = 'none';
-
-  // 2. Append User Query Bubble
-  const userBubble = document.createElement('div');
-  userBubble.className = 'ai-chat-bubble user';
-  userBubble.textContent = userQuery;
-  chatFlow.appendChild(userBubble);
-
-  // 3. Clear Input Field Immediately
+  hideWelcomeScreen();
+  const conversation = conversationForApi();
+  pushMessage({ type: 'user', text: userQuery });
   queryInput.value = '';
   queryInput.style.height = 'auto';
-
-  // 4. Append Loading Indicator
-  const loadingBubble = document.createElement('div');
-  loadingBubble.className = 'ai-loading-indicator';
-  loadingBubble.id = 'ai-active-loading';
-  loadingBubble.innerHTML = '<span class="ai-thinking-dots"><i></i><i></i><i></i></span> Thinking through this page';
-  chatFlow.appendChild(loadingBubble);
-  chatFlow.scrollTop = chatFlow.scrollHeight;
-
-  const sendButton = document.getElementById('ai-send-btn');
-  sendButton.disabled = true;
-  queryInput.disabled = true;
-  chatFlow.setAttribute('aria-busy', 'true');
-
-  const scannedData = extractPageData();
+  showLoading('Samajh raha hoon…');
+  setBusy(true);
 
   try {
-    const res = await fetch('http://127.0.0.1:3000/api/v1/ai/scan', {
+    const res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         query: userQuery,
-        textContext: scannedData.textContext,
-        extractedLinks: scannedData.links,
-        pageUrl: window.location.href
-      })
+        conversation,
+        pageUrl: window.location.href,
+        textContext: lightPageContext(),
+      }),
     });
 
     const result = await res.json().catch(() => ({}));
-    
-    // Remove Loading Indicator
-    const activeLoading = document.getElementById('ai-active-loading');
-    if (activeLoading) activeLoading.remove();
+    document.getElementById('ai-active-loading')?.remove();
 
-    if (result.success && result.data && result.data.answer) {
-      renderFormattedMessage(
-        chatFlow,
-        result.data.answer,
-        new Set(scannedData.links.map(l => l.url))
-      );
-    } else {
-      const errBubble = document.createElement('div');
-      errBubble.className = 'ai-chat-bubble assistant error';
-      errBubble.textContent = result.message || `Request failed (${res.status}).`;
-      chatFlow.appendChild(errBubble);
+    const data = result?.data || {};
+    const reply = String(data.reply || '').trim();
+
+    if (!result.success || !reply) {
+      pushMessage({ type: 'error', text: result.message || `Request failed (${res.status}).` });
+      return;
     }
-  } catch (error) {
-    const activeLoading = document.getElementById('ai-active-loading');
-    if (activeLoading) activeLoading.remove();
 
-    const errBubble = document.createElement('div');
-    errBubble.className = 'ai-chat-bubble assistant error';
-    errBubble.textContent = 'Ask AI could not process this page right now.';
-    chatFlow.appendChild(errBubble);
+    pushMessage({ type: 'assistant', text: reply });
+
+    if (data.intent && data.intent !== 'chat') {
+      await fulfillLinkedInRequest(data);
+    }
+  } catch {
+    document.getElementById('ai-active-loading')?.remove();
+    pushMessage({ type: 'error', text: 'Ask AI abhi jawab nahi de saka. Thori der baad try karo.' });
   } finally {
-    sendButton.disabled = false;
-    queryInput.disabled = false;
-    chatFlow.removeAttribute('aria-busy');
+    setBusy(false);
     queryInput.focus();
-    chatFlow.scrollTop = chatFlow.scrollHeight;
   }
 }
 
-if (document.readyState === 'loading') {
-  window.addEventListener('DOMContentLoaded', injectAIWidget, { once: true });
-} else {
+function boot() {
+  if (!isLinkedInHost()) return;
   injectAIWidget();
+  restoreChat();
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', boot, { once: true });
+} else {
+  boot();
 }
