@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Ask AI",
+  "version": "1.0",
+  "description": "Your page-aware AI assistant for instant summaries, useful links, profiles, and job insights.",
+  "action": {
+    "default_title": "Ask AI"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:3000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ]
+}
