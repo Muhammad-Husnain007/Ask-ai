@@ -57,7 +57,8 @@ export function extractStackPaths(stack, culprit = '') {
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .replace(/^[A-Za-z]:/, '')
-    .replace(/^\/+/, '')))];
+    .replace(/^\/+/, '')
+    .replace(/:\d+:\d+$/, '')))];
 }
 
 function scoreRepoPath(hint, repoPath) {
@@ -136,11 +137,17 @@ export async function gatherGithubContext({ stack, culprit, release, extra, loca
     }
   }
   const files = [];
-  for (const path of matched) {
-    const local = localFiles.find((item) => item.path === path);
-    const contents = local?.contents || await readGithubFile(target, path);
+  for (const filePath of matched) {
+    const local = localFiles.find((item) => item.path === filePath);
+    const githubContents = await readGithubFile(target, filePath);
+    const contents = local?.contents || githubContents;
     if (!contents) continue;
-    files.push({ path, contents, fromLocal: Boolean(local) });
+    files.push({
+      path: filePath,
+      contents,
+      githubContents: githubContents || contents,
+      fromLocal: Boolean(local),
+    });
   }
   return { ...target, files };
 }
@@ -159,7 +166,7 @@ export async function createFixPullRequest({ branch, title, body, files }) {
     const blob = await octokit.git.createBlob({
       owner,
       repo,
-      content: file.contents,
+      content: file.githubContents || file.contents,
       encoding: 'utf-8',
     });
     blobs.push({
@@ -240,4 +247,25 @@ export async function createFixPullRequest({ branch, title, body, files }) {
     }
     return { ok: false, reason: error.message || 'Unable to open pull request' };
   }
+}
+
+export async function listPullStates() {
+  const client = createClient();
+  if (!client.ok) return [];
+  const { octokit, owner, repo } = client;
+  const { data } = await octokit.pulls.list({
+    owner,
+    repo,
+    state: 'all',
+    per_page: 100,
+    sort: 'updated',
+    direction: 'desc',
+  });
+  return data.map((pr) => ({
+    url: pr.html_url,
+    number: pr.number,
+    merged: Boolean(pr.merged_at),
+    closed: pr.state === 'closed' || Boolean(pr.merged_at),
+    title: pr.title,
+  }));
 }

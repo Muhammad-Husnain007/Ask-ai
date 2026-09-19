@@ -5,7 +5,8 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { Server } from 'socket.io';
 import { runFixAgent, shouldRunAgent } from './agent.js';
-import { createProject, getIssue, getProject, ingestEvent, listIssues, listProjects, setIssueStatus, stats, updateProject } from './store.js';
+import { listPullStates } from './github.js';
+import { applyPullStates, createProject, getIssue, getProject, ingestEvent, listIssues, listProjects, setIssueStatus, stats, updateProject } from './store.js';
 import './db.js';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -38,6 +39,17 @@ function queueAgent(issue, event, force = false, project = null) {
       app.log.error({ err: error }, 'Pulse AI agent failed');
     });
   });
+}
+
+let lastPullSync = 0;
+async function syncPullStatuses() {
+  if (Date.now() - lastPullSync < 20000) return;
+  lastPullSync = Date.now();
+  try {
+    applyPullStates(await listPullStates());
+  } catch (error) {
+    app.log.warn({ err: error }, 'Unable to refresh pull request statuses');
+  }
 }
 
 app.get('/health', async () => ({
@@ -77,6 +89,7 @@ app.patch('/api/projects/:id', async (req, reply) => {
 });
 
 app.get('/api/issues', async (req) => {
+  await syncPullStatuses();
   const { projectId, status, environment, q, limit } = req.query || {};
   return { issues: listIssues({ projectId, status, environment, q, limit }) };
 });
@@ -108,7 +121,10 @@ app.post('/api/issues/:id/agent', async (req, reply) => {
   return { ok: true, queued: true, issue: { ...issue, agent_status: 'running' } };
 });
 
-app.get('/api/stats', async (req) => ({ stats: stats(req.query?.projectId) }));
+app.get('/api/stats', async (req) => {
+  await syncPullStatuses();
+  return { stats: stats(req.query?.projectId) };
+});
 
 app.post('/ingest/:projectKey', {
   config: { rateLimit: { max: 300, timeWindow: '1 minute' } },

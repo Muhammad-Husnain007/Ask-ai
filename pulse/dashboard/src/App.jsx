@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom';
-import { Activity, AlertTriangle, Bot, CircleDot, GitPullRequest, Mail, Radio, Settings2, ShieldAlert } from 'lucide-react';
+import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { AlertTriangle, Ban, Bot, CheckCircle2, CircleDot, GitMerge, GitPullRequest, Mail, Radio, Settings2, ShieldAlert } from 'lucide-react';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { io } from 'socket.io-client';
 import { createProject, getIssue, getIssues, getProjects, getStats, patchIssue, patchProject, runIssueAgent } from './api.js';
@@ -46,6 +46,22 @@ function AgentPill({ status }) {
   );
 }
 
+const ISSUE_VIEWS = [
+  { id: 'open', label: 'Open issues', to: '/', stat: 'openIssues', icon: CircleDot, empty: 'No open issues yet. Connected apps will appear here when they report errors.' },
+  { id: 'fixed', label: 'Fixed issues', to: '/fixed', stat: 'fixedIssues', icon: CheckCircle2, empty: 'No AI-fixed issues yet.' },
+  { id: 'create-pull', label: 'Create pull', to: '/pulls', stat: 'createPull', icon: GitPullRequest, empty: 'No pull requests created yet.' },
+  { id: 'merge-pull', label: 'Merge pull', to: '/merged', stat: 'mergePull', icon: GitMerge, empty: 'No merged pull requests yet.' },
+];
+
+const DROPDOWN_VIEWS = [
+  ...ISSUE_VIEWS,
+  { id: 'closed-pull', label: 'Closed PR', to: '/closed', stat: 'closedPull', icon: Ban, empty: 'No closed pull requests yet.' },
+];
+
+function viewPath(id) {
+  return DROPDOWN_VIEWS.find((item) => item.id === id)?.to || '/';
+}
+
 function usePulseLive(onEvent) {
   const callback = useRef(onEvent);
   callback.current = onEvent;
@@ -61,6 +77,8 @@ function usePulseLive(onEvent) {
 }
 
 function Shell({ children, liveCount }) {
+  const location = useLocation();
+  const issuesActive = ['/', '/fixed', '/pulls', '/merged', '/closed'].includes(location.pathname) || location.pathname.startsWith('/issues/');
   return (
     <div className="min-h-screen bg-ink-950 text-zinc-100">
       <div className="flex min-h-screen">
@@ -75,7 +93,7 @@ function Shell({ children, liveCount }) {
             </div>
           </div>
           <nav className="space-y-1 text-sm">
-            <NavLink to="/" end className={({ isActive }) => `flex items-center gap-2 rounded-lg px-3 py-2 ${isActive ? 'bg-white/8 text-white' : 'text-zinc-400 hover:bg-white/4 hover:text-white'}`}>
+            <NavLink to="/" className={() => `flex items-center gap-2 rounded-lg px-3 py-2 ${issuesActive ? 'bg-white/8 text-white' : 'text-zinc-400 hover:bg-white/4 hover:text-white'}`}>
               <AlertTriangle size={16} /> Issues
             </NavLink>
             <NavLink to="/live" className={({ isActive }) => `flex items-center gap-2 rounded-lg px-3 py-2 ${isActive ? 'bg-white/8 text-white' : 'text-zinc-400 hover:bg-white/4 hover:text-white'}`}>
@@ -97,17 +115,18 @@ function Shell({ children, liveCount }) {
   );
 }
 
-function IssuesPage({ refreshKey }) {
+function IssuesPage({ refreshKey, view = 'open' }) {
+  const navigate = useNavigate();
   const [issues, setIssues] = useState(null);
   const [stats, setStats] = useState(null);
-  const [status, setStatus] = useState('open');
   const [q, setQ] = useState('');
   const [loadError, setLoadError] = useState('');
+  const currentView = DROPDOWN_VIEWS.find((item) => item.id === view) || ISSUE_VIEWS[0];
 
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      getIssues({ status, q })
+      getIssues({ status: view, q })
         .then((data) => { if (!cancelled) setIssues(data.issues || []); })
         .catch((error) => { if (!cancelled) { setIssues([]); setLoadError(error.message); } });
       getStats()
@@ -117,7 +136,7 @@ function IssuesPage({ refreshKey }) {
     load();
     const timer = setInterval(load, 4000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [status, q, refreshKey]);
+  }, [view, q, refreshKey]);
 
   const chartData = useMemo(() => (stats?.series || []).map((row) => ({
     hour: row.hour.slice(11, 16),
@@ -128,24 +147,32 @@ function IssuesPage({ refreshKey }) {
     <div className="p-8">
       <div className="mb-8 flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Issues</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{currentView.label}</h1>
           <p className="mt-1 text-sm text-zinc-500">Grouped production exceptions, live-updated.</p>
         </div>
         <div className="flex gap-2">
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search title or culprit" className="h-10 w-64 rounded-lg border border-white/10 bg-ink-800 px-3 text-sm outline-none focus:border-orange-400/50" />
-          <select value={status} onChange={(e) => setStatus(e.target.value)} className="h-10 rounded-lg border border-white/10 bg-ink-800 px-3 text-sm">
-            <option value="open">Open</option>
-            <option value="resolved">Resolved</option>
-            <option value="ignored">Ignored</option>
-            <option value="all">All</option>
+          <select value={view} onChange={(e) => navigate(viewPath(e.target.value))} className="h-10 rounded-lg border border-white/10 bg-ink-800 px-3 text-sm">
+            {DROPDOWN_VIEWS.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label} ({stats?.[item.stat] ?? 0})
+              </option>
+            ))}
           </select>
         </div>
       </div>
 
-      <div className="mb-8 grid grid-cols-3 gap-4">
-        <StatCard label="Open issues" value={stats?.openIssues ?? '—'} icon={<CircleDot size={16} />} />
-        <StatCard label="Events (24h)" value={stats?.events24h ?? '—'} icon={<Activity size={16} />} />
-        <StatCard label="Users affected (24h)" value={stats?.users24h ?? '—'} icon={<AlertTriangle size={16} />} />
+      <div className="mb-8 grid grid-cols-4 gap-4">
+        {ISSUE_VIEWS.map((item) => (
+          <StatCard
+            key={item.id}
+            label={item.label}
+            value={stats?.[item.stat] ?? '—'}
+            icon={<item.icon size={16} />}
+            active={item.id === view}
+            onClick={() => navigate(item.to)}
+          />
+        ))}
       </div>
 
       <div className="mb-6 h-40 rounded-2xl border border-white/8 bg-ink-900 p-4">
@@ -183,7 +210,7 @@ function IssuesPage({ refreshKey }) {
               <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">Loading issues…</td></tr>
             )}
             {issues && issues.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">{loadError || 'No issues yet. Connected apps will appear here when they report errors.'}</td></tr>
+              <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">{loadError || currentView.empty}</td></tr>
             )}
             {(issues || []).map((issue) => (
               <tr key={issue.id} className="border-t border-white/5 bg-ink-900/40 hover:bg-white/[.03]">
@@ -191,6 +218,9 @@ function IssuesPage({ refreshKey }) {
                   <Link to={`/issues/${issue.id}`} className="block">
                     <div className="font-medium text-zinc-100">{issue.title}</div>
                     <div className="mt-0.5 font-mono text-[11px] text-zinc-500">{issue.culprit || issue.fingerprint}</div>
+                    {issue.pr_url && (
+                      <div className="mt-1 text-[11px] text-emerald-300">{issue.pr_url.replace('https://github.com/', '')}</div>
+                    )}
                   </Link>
                 </td>
                 <td className="px-4 py-3"><Badge level={issue.level} /></td>
@@ -207,12 +237,16 @@ function IssuesPage({ refreshKey }) {
   );
 }
 
-function StatCard({ label, value, icon }) {
+function StatCard({ label, value, icon, active, onClick }) {
   return (
-    <div className="rounded-2xl border border-white/8 bg-ink-900 p-4">
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-2xl border p-4 text-left transition ${active ? 'border-orange-400/40 bg-orange-500/10' : 'border-white/8 bg-ink-900 hover:border-white/20'}`}
+    >
       <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-wider text-zinc-500">{icon} {label}</div>
       <div className="text-3xl font-semibold tracking-tight">{value}</div>
-    </div>
+    </button>
   );
 }
 
@@ -508,7 +542,11 @@ export default function App() {
   return (
     <Shell liveCount={liveEvents.length}>
       <Routes>
-        <Route path="/" element={<IssuesPage refreshKey={refreshKey} />} />
+        <Route path="/" element={<IssuesPage refreshKey={refreshKey} view="open" />} />
+        <Route path="/fixed" element={<IssuesPage refreshKey={refreshKey} view="fixed" />} />
+        <Route path="/pulls" element={<IssuesPage refreshKey={refreshKey} view="create-pull" />} />
+        <Route path="/merged" element={<IssuesPage refreshKey={refreshKey} view="merge-pull" />} />
+        <Route path="/closed" element={<IssuesPage refreshKey={refreshKey} view="closed-pull" />} />
         <Route path="/issues/:id" element={<IssueDetail />} />
         <Route path="/live" element={<LivePage events={liveEvents} />} />
         <Route path="/setup" element={<SetupPage />} />

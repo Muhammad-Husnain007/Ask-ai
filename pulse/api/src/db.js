@@ -77,6 +77,8 @@ ensureColumn('issues', 'agent_status', "TEXT NOT NULL DEFAULT 'idle'");
 ensureColumn('issues', 'agent_summary', 'TEXT');
 ensureColumn('issues', 'agent_solution', 'TEXT');
 ensureColumn('issues', 'pr_url', 'TEXT');
+ensureColumn('issues', 'pr_merged', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('issues', 'pr_closed', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('issues', 'emailed_at', 'TEXT');
 ensureColumn('issues', 'emailed_to', 'TEXT');
 ensureColumn('projects', 'notify_email', "TEXT NOT NULL DEFAULT 'mh8169951@gmail.com'");

@@ -69,9 +69,18 @@ const stmts = {
     SET agent_status = @status,
         agent_summary = @summary,
         agent_solution = @solution,
-        pr_url = @prUrl,
+        pr_url = CASE WHEN @prUrl != '' THEN @prUrl ELSE pr_url END,
+        pr_merged = CASE WHEN @prUrl != '' THEN 0 ELSE pr_merged END,
+        pr_closed = CASE WHEN @prUrl != '' THEN 0 ELSE pr_closed END,
         emailed_at = @emailedAt,
         emailed_to = @emailedTo
+    WHERE id = @id
+  `),
+  applyPullState: db.prepare(`
+    UPDATE issues
+    SET pr_merged = @merged,
+        pr_closed = @closed,
+        status = CASE WHEN @merged = 1 AND status = 'open' THEN 'resolved' ELSE status END
     WHERE id = @id
   `),
 };
@@ -141,6 +150,33 @@ export function updateProject(id, { name, notifyEmail } = {}) {
   return stmts.projectById.get(id);
 }
 
+export function applyPullStates(pulls = []) {
+  const byUrl = new Map(
+    pulls
+      .filter((pull) => pull?.url)
+      .map((pull) => [String(pull.url).replace(/\/$/, ''), pull]),
+  );
+  const issues = db.prepare(`
+    SELECT id, pr_url FROM issues
+    WHERE pr_url IS NOT NULL AND trim(pr_url) != ''
+  `).all();
+  for (const issue of issues) {
+    const hit = byUrl.get(String(issue.pr_url).replace(/\/$/, ''));
+    if (!hit) continue;
+    stmts.applyPullState.run({
+      id: issue.id,
+      merged: hit.merged ? 1 : 0,
+      closed: hit.closed || hit.merged ? 1 : 0,
+    });
+  }
+  db.prepare(`
+    UPDATE issues
+    SET status = 'resolved',
+        pr_closed = CASE WHEN pr_merged = 1 THEN 1 ELSE pr_closed END
+    WHERE pr_merged = 1 AND status = 'open'
+  `).run();
+}
+
 export function listIssues({ projectId, status, environment, q, limit = 80 } = {}) {
   const clauses = [];
   const params = [];
@@ -148,7 +184,17 @@ export function listIssues({ projectId, status, environment, q, limit = 80 } = {
     clauses.push('i.project_id = ?');
     params.push(projectId);
   }
-  if (status && status !== 'all') {
+  if (status === 'fixed' || status === 'resolved') {
+    clauses.push("i.agent_status = 'done' AND i.pr_url IS NOT NULL AND trim(i.pr_url) != ''");
+  } else if (status === 'create-pull') {
+    clauses.push("i.pr_url IS NOT NULL AND trim(i.pr_url) != '' AND IFNULL(i.pr_merged, 0) = 0 AND IFNULL(i.pr_closed, 0) = 0");
+  } else if (status === 'merge-pull') {
+    clauses.push('i.pr_merged = 1');
+  } else if (status === 'closed-pull') {
+    clauses.push('IFNULL(i.pr_closed, 0) = 1');
+  } else if (status === 'open') {
+    clauses.push("i.status = 'open'");
+  } else if (status && status !== 'all') {
     clauses.push('i.status = ?');
     params.push(status);
   }
@@ -195,7 +241,19 @@ export function stats(projectId) {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const issueFilter = projectId ? 'AND project_id = ?' : '';
   const params = projectId ? [since, projectId] : [since];
-  const open = db.prepare(`SELECT COUNT(*) AS n FROM issues WHERE status = 'open' ${projectId ? 'AND project_id = ?' : ''}`).get(...(projectId ? [projectId] : []));
+  const scope = projectId ? 'AND project_id = ?' : '';
+  const scopeParams = projectId ? [projectId] : [];
+  const open = db.prepare(`SELECT COUNT(*) AS n FROM issues WHERE status = 'open' ${scope}`).get(...scopeParams);
+  const fixed = db.prepare(`
+    SELECT COUNT(*) AS n FROM issues
+    WHERE agent_status = 'done' AND pr_url IS NOT NULL AND trim(pr_url) != '' ${scope}
+  `).get(...scopeParams);
+  const createPull = db.prepare(`
+    SELECT COUNT(*) AS n FROM issues
+    WHERE pr_url IS NOT NULL AND trim(pr_url) != '' AND IFNULL(pr_merged, 0) = 0 AND IFNULL(pr_closed, 0) = 0 ${scope}
+  `).get(...scopeParams);
+  const mergePull = db.prepare(`SELECT COUNT(*) AS n FROM issues WHERE pr_merged = 1 ${scope}`).get(...scopeParams);
+  const closedPull = db.prepare(`SELECT COUNT(*) AS n FROM issues WHERE IFNULL(pr_closed, 0) = 1 ${scope}`).get(...scopeParams);
   const events24h = db.prepare(`SELECT COUNT(*) AS n FROM events WHERE timestamp >= ? ${issueFilter}`).get(...params);
   const users24h = db.prepare(`
     SELECT COUNT(DISTINCT json_extract(user_json, '$.id')) AS n
@@ -217,6 +275,10 @@ export function stats(projectId) {
   `).all(...(projectId ? [projectId] : []));
   return {
     openIssues: open.n,
+    fixedIssues: fixed.n,
+    createPull: createPull.n,
+    mergePull: mergePull.n,
+    closedPull: closedPull.n,
     events24h: events24h.n,
     users24h: users24h.n,
     series,

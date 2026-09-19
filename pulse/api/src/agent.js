@@ -2,7 +2,7 @@ import path from 'node:path';
 import { GoogleGenAI } from '@google/genai';
 import { createFixPullRequest, gatherGithubContext } from './github.js';
 import { emailFixReport, resolveNotifyEmail } from './mailer.js';
-import { applyLocalFiles, findLocalParseErrors } from './source.js';
+import { applyAiFilePatch, applyLocalFiles, fallbackReferenceErrorFix, findLocalParseErrors, findStackLocalFiles } from './source.js';
 import { getIssue, getProject, saveAgentResult, setAgentStatus } from './store.js';
 
 const repoRoot = path.resolve(process.env.REPO_ROOT || path.join(process.cwd(), '..', '..'));
@@ -24,19 +24,24 @@ function normalizePath(value) {
   return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
-function isPlausiblePatch(original, next) {
-  const current = String(original || '');
-  const updated = String(next || '');
-  if (!updated.trim() || updated === current) return false;
-  const originalLines = current.split('\n').map((line) => line.trim()).filter(Boolean);
-  if (originalLines.length <= 12) return true;
-  const updatedSet = new Set(updated.split('\n').map((line) => line.trim()).filter(Boolean));
-  const kept = originalLines.filter((line) => updatedSet.has(line)).length;
-  return kept / originalLines.length >= 0.45;
+function fixedIssueName(title) {
+  const slug = String(title || 'issue')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'issue';
+  return `fixed/${slug}`;
+}
+
+function stackFocus(issue, event) {
+  const text = `${issue.culprit || ''}\n${event.stack || ''}`;
+  const match = text.match(/([^/\\]+\.(?:js|jsx|mjs|cjs)):(\d+)(?::\d+)?/i);
+  if (!match) return 'Change only the crashing line or the smallest unique snippet.';
+  return `The crash points at ${match[1]} line ${match[2]}. Edit only that line or the smallest unique snippet around it.`;
 }
 
 function selectPatchedFiles(aiFiles, contextFiles) {
-  const allowed = new Map(contextFiles.map((file) => [file.path, file.contents]));
+  const allowed = new Map(contextFiles.map((file) => [file.path, file]));
   const out = [];
   for (const file of Array.isArray(aiFiles) ? aiFiles : []) {
     const requested = normalizePath(file?.path);
@@ -47,10 +52,16 @@ function selectPatchedFiles(aiFiles, contextFiles) {
       target = [...allowed.keys()].find((item) => item === requested || item.endsWith(`/${base}`)) || null;
     }
     if (!target) continue;
-    const contents = String(file.contents ?? file.content ?? '');
-    if (!isPlausiblePatch(allowed.get(target), contents)) continue;
+    const context = allowed.get(target);
+    const localPatched = applyAiFilePatch(context.contents, file);
+    if (!localPatched) continue;
+    const githubPatched = applyAiFilePatch(context.githubContents || context.contents, file);
     if (out.some((item) => item.path === target)) continue;
-    out.push({ path: target, contents });
+    out.push({
+      path: target,
+      contents: localPatched,
+      githubContents: githubPatched || context.githubContents || localPatched,
+    });
   }
   return out;
 }
@@ -63,28 +74,31 @@ async function analyzeWithGemini({ issue, event, contextFiles, repo, base }) {
   const ai = new GoogleGenAI({ apiKey });
   const allowedPaths = contextFiles.map((file) => file.path);
   const prompt = `You are Pulse, a production incident agent.
-The files below are the CURRENT contents of the client's GitHub branch \`${base}\` in \`${repo}\`.
-Patch those files in place so the crash is fixed, then a pull request can be opened against that same base branch.
+The files below are the current source that crashed.
+${stackFocus(issue, event)}
+A pull request will be opened against GitHub \`${repo}\` branch \`${base}\`.
 
 Return ONLY JSON:
 {
   "summary": "one paragraph",
   "rootCause": "technical cause",
   "solution": "what you changed and why",
-  "prTitle": "fix: ...",
   "prBody": "markdown PR description",
-  "commitMessage": "fix: ...",
-  "files": [{"path":"exact/path/from/the/list.js","contents":"full updated file contents"}]
+  "files": [{
+    "path": "exact/path/from/the/list.js",
+    "edits": [{ "old": "exact original snippet copied from the file", "new": "the same snippet with only the bug fixed" }]
+  }]
 }
 
 Rules:
 - Only edit these exact paths: ${JSON.stringify(allowedPaths)}
-- Return the complete file contents, not a diff and not a snippet.
-- Keep existing style, imports, comments, and unrelated logic.
-- Change the smallest safe amount of code that fixes the crash.
+- Do NOT return full file contents. Return tiny search/replace edits only.
+- "old" must match the file text exactly, including spaces.
+- Change only the failing line or the smallest unique snippet. One or two edits is enough.
+- Do not reformat, rename unrelated symbols, reorder imports, or rewrite the rest of the file.
 - Do not add markdown, incident notes, or new files.
-- If this is a SyntaxError and the stack only shows Node internals, inspect the provided source and repair the invalid JavaScript.
-- If you cannot make a safe code fix, return files: [] and explain in solution.
+- Pulse will name the pull request fixed/issue-name from the issue title.
+- If you cannot make a safe one-line/small-hunk fix, return files: [] and explain in solution.
 
 Issue title: ${issue.title}
 Culprit: ${issue.culprit || 'n/a'}
@@ -94,7 +108,7 @@ Environment: ${event.environment || 'n/a'}
 Stack:
 ${event.stack || issue.title}
 
-Client base-branch files:
+Client source files:
 ${JSON.stringify(contextFiles.map((file) => ({ path: file.path, contents: file.contents.slice(0, 16000) })))}`;
 
   let lastError;
@@ -132,17 +146,25 @@ export async function runFixAgent({ issue, event, logger, io, force = false, pro
     summary: '',
     rootCause: '',
     solution: '',
-    prTitle: `fix: ${issue.title}`.slice(0, 70),
+    prTitle: fixedIssueName(issue.title),
     prBody: '',
   };
   let prUrl = '';
   let agentError = '';
 
   try {
-    const localFiles = findLocalParseErrors(repoRoot, {
-      release: event.release || event.release_name,
-      cwd: event.extra?.cwd,
-    });
+    const localFiles = [
+      ...findStackLocalFiles(repoRoot, {
+        stack: event.stack,
+        culprit: issue.culprit,
+        extra: event.extra,
+        release: event.release || event.release_name,
+      }),
+      ...findLocalParseErrors(repoRoot, {
+        release: event.release || event.release_name,
+        cwd: event.extra?.cwd,
+      }),
+    ].filter((file, index, all) => all.findIndex((item) => item.path === file.path) === index);
     const github = await gatherGithubContext({
       stack: event.stack,
       culprit: issue.culprit,
@@ -177,12 +199,14 @@ export async function runFixAgent({ issue, event, logger, io, force = false, pro
         logger?.error?.({ err: error }, 'Pulse AI analysis failed');
       }
 
-      const files = selectPatchedFiles(analysis.files, github.files);
+      let files = selectPatchedFiles(analysis.files, github.files);
+      if (!files.length) files = fallbackReferenceErrorFix(issue, github.files);
       if (files.length) {
         applyLocalFiles(repoRoot, files);
+        const prName = fixedIssueName(issue.title);
         const pr = await createFixPullRequest({
-          branch: `pulse/fix-${issue.id}`.replace(/[^a-zA-Z0-9/_-]/g, '-').slice(0, 60),
-          title: analysis.prTitle || `fix: ${issue.title}`.slice(0, 70),
+          branch: prName,
+          title: prName,
           body: [
             analysis.prBody || analysis.solution || analysis.summary,
             '',
@@ -191,14 +215,16 @@ export async function runFixAgent({ issue, event, logger, io, force = false, pro
             `Repo: ${github.repoFull}`,
             event.url ? `Error URL: ${event.url}` : '',
             '',
-            'This PR applies the AI patch onto the current client base-branch files.',
+            'This PR changes only the crashing snippet on the client base-branch files.',
           ].filter(Boolean).join('\n'),
           files,
         });
         if (pr.ok && pr.url) prUrl = pr.url;
         else if (pr.unchanged) {
-          prUrl = current.pr_url || '';
-          agentError = agentError || 'Code fix is ready locally. GitHub base already contains the same patch, so no new code diff was opened.';
+          analysis.solution = [
+            analysis.solution,
+            'Local crashing file was patched. GitHub base already has the same code, so no new PR diff was created.',
+          ].filter(Boolean).join('\n\n');
         } else agentError = pr.reason || 'GitHub PR failed';
       } else {
         agentError = agentError || 'AI did not return a safe patch against the client source files.';
