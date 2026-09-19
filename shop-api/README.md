@@ -1,6 +1,6 @@
 # shop-api
 
-Express + MongoDB commerce backend. Pulse is not wired in.
+Express + MongoDB commerce backend.
 
 ## Modules
 
@@ -23,10 +23,12 @@ npm run seed
 npm run dev
 ```
 
-Needs MongoDB on `127.0.0.1:27017`.
+Needs MongoDB and Pulse running if you want error tracking.
 
 - Health: http://127.0.0.1:4000/health
 - Seed admin: `admin@shop.local` / `Admin123!`
+
+Pulse (product): set `PULSE_DSN` in `.env`. The start script already preloads `@pulse/sdk/register`. No app-code changes.
 
 ## Auth header
 

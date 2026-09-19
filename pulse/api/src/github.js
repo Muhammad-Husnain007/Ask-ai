@@ -10,8 +10,17 @@ export async function createFixPullRequest({ branch, title, body, files }) {
   const [owner, repo] = repoFull.split('/');
   const octokit = new Octokit({ auth: token });
   const { data: repoData } = await octokit.repos.get({ owner, repo });
-  const base = process.env.GITHUB_BASE_BRANCH || repoData.default_branch;
-  const { data: baseRef } = await octokit.git.getRef({ owner, repo, ref: `heads/${base}` });
+  const requested = String(process.env.GITHUB_BASE_BRANCH || '').trim();
+  const usable = requested && !requested.includes('..') && /^[A-Za-z0-9._/-]+$/.test(requested);
+  let base = usable ? requested : repoData.default_branch;
+  let baseRef;
+  try {
+    ({ data: baseRef } = await octokit.git.getRef({ owner, repo, ref: `heads/${base}` }));
+  } catch (error) {
+    if (error.status !== 404 || base === repoData.default_branch) throw error;
+    base = repoData.default_branch;
+    ({ data: baseRef } = await octokit.git.getRef({ owner, repo, ref: `heads/${base}` }));
+  }
 
   try {
     await octokit.git.createRef({

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom';
-import { Activity, AlertTriangle, Bot, CheckCircle2, CircleDot, GitPullRequest, Mail, Radio, Settings2, ShieldAlert } from 'lucide-react';
+import { Activity, AlertTriangle, Bot, CircleDot, GitPullRequest, Mail, Radio, Settings2, ShieldAlert } from 'lucide-react';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { io } from 'socket.io-client';
 import { createProject, getIssue, getIssues, getProjects, getStats, patchIssue, patchProject, runIssueAgent } from './api.js';
@@ -117,7 +117,7 @@ function IssuesPage({ refreshKey }) {
     load();
     const timer = setInterval(load, 4000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [status, q]);
+  }, [status, q, refreshKey]);
 
   const chartData = useMemo(() => (stats?.series || []).map((row) => ({
     hour: row.hour.slice(11, 16),
@@ -392,22 +392,15 @@ function SetupPage() {
 
   const active = selected || projects[0];
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:5173';
-  const localDsn = `http://127.0.0.1:8787/ingest/${active?.public_key || 'pk_live_demo_pulse'}`;
-  const dashboardDsn = `${origin}/ingest/${active?.public_key || 'pk_live_demo_pulse'}`;
-  const snippet = `import { init, captureException } from '@pulse/sdk';
+  const localDsn = `http://127.0.0.1:8787/ingest/${active?.public_key || 'YOUR_PUBLIC_KEY'}`;
+  const dashboardDsn = `${origin}/ingest/${active?.public_key || 'YOUR_PUBLIC_KEY'}`;
+  const snippet = `npm install @pulse/sdk
 
-init({
-  dsn: '${localDsn}',
-  environment: 'production', // or 'local'
-  release: '1.0.0',
-  user: { id: 'u_42', email: 'dev@company.com' },
-});
+# .env
+PULSE_DSN=${localDsn}
 
-try {
-  riskyWork();
-} catch (error) {
-  captureException(error);
-}`;
+# package.json
+"start": "node --import @pulse/sdk/register src/server.js"`;
 
   return (
     <div className="p-8">
@@ -423,7 +416,7 @@ try {
         <div className="rounded-2xl border border-white/8 bg-ink-900 p-5 text-sm">
           <h2 className="mb-2 font-semibold">Production app</h2>
           <p className="mb-3 text-zinc-500">Deploy Pulse, then replace the host. Same project key works.</p>
-          <code className="block break-all rounded-lg bg-black/30 px-3 py-2 font-mono text-[12px] text-orange-200">https://pulse.yourdomain.com/ingest/{active?.public_key || 'pk_live_demo_pulse'}</code>
+          <code className="block break-all rounded-lg bg-black/30 px-3 py-2 font-mono text-[12px] text-orange-200">https://pulse.yourdomain.com/ingest/{active?.public_key || 'YOUR_PUBLIC_KEY'}</code>
         </div>
       </div>
 
@@ -515,7 +508,7 @@ export default function App() {
   return (
     <Shell liveCount={liveEvents.length}>
       <Routes>
-        <Route path="/" element={<IssuesPage />} />
+        <Route path="/" element={<IssuesPage refreshKey={refreshKey} />} />
         <Route path="/issues/:id" element={<IssueDetail />} />
         <Route path="/live" element={<LivePage events={liveEvents} />} />
         <Route path="/setup" element={<SetupPage />} />

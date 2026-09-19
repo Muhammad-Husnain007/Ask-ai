@@ -25,38 +25,34 @@ npm run dev
 
 Set `GEMINI_API_KEY`, `GITHUB_TOKEN`, and SMTP in `pulse/.env`. The **PR alert inbox is not only in .env** — pick it per project in **Setup**.
 
-## Add Pulse to any project
+## Install Pulse in any company app
 
-1. Open Pulse dashboard → **Setup / SDK**.
-2. Create a project (or use Production App).
-3. Save the **PR email** on that project. That inbox gets the AI fix + PR mail.
-4. Copy the project DSN into the app:
+Pulse is a product. The app does **not** import Pulse source folders. Install the SDK, set one env var, preload it on start.
 
-**Local app**
-
-```js
-import { init, captureException } from '@pulse/sdk';
-
-init({
-  dsn: 'http://127.0.0.1:8787/ingest/YOUR_PROJECT_KEY',
-  environment: 'local',
-  release: 'dev',
-});
+```bash
+npm install @pulse/sdk
 ```
 
-**Production app** — deploy Pulse API, then use the public host with the same key:
-
-```js
-init({
-  dsn: 'https://pulse.yourdomain.com/ingest/YOUR_PROJECT_KEY',
-  environment: 'production',
-  release: process.env.APP_VERSION,
-});
+```env
+PULSE_DSN=http://127.0.0.1:8787/ingest/YOUR_PROJECT_KEY
+PULSE_ENVIRONMENT=production
+PULSE_RELEASE=1.0.0
 ```
 
-5. Call `captureException(error)` in `catch`, or let the SDK catch `window.onerror` / unhandled rejections.
+```json
+{
+  "scripts": {
+    "start": "node --import @pulse/sdk/register src/server.js"
+  }
+}
+```
 
-Same SDK, same project key. Only the DSN host changes: localhost vs your Pulse server. `environment: 'local'` vs `'production'` keeps events labeled in the dashboard.
+No route changes. No custom error-handler edits. The SDK hooks process crashes and Express `app.use(err, req, res, next)` handlers automatically.
+
+Create the project + DSN in the Pulse dashboard (**Setup**). Production uses the same key with your Pulse host:
+
+`https://pulse.yourdomain.com/ingest/YOUR_PROJECT_KEY`
+
 
 ## Flow
 

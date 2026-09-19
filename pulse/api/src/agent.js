@@ -91,7 +91,7 @@ async function analyzeWithGemini({ issue, event, contextFiles }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY missing');
   const ai = new GoogleGenAI({ apiKey });
-  const model = (process.env.PRIMARY_GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, '');
+  const model = (process.env.PRIMARY_GEMINI_MODEL || 'gemini-3.6-flash').replace(/^models\//, '');
   const prompt = `You are Pulse, a production incident agent.
 Given a runtime error, find the root cause and implement a minimal, safe code fix.
 

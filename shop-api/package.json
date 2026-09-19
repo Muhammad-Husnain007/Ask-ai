@@ -6,8 +6,8 @@
   "description": "Production-style Express + MongoDB commerce API",
   "main": "src/server.js",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
+    "dev": "node --watch --import @pulse/sdk/register src/server.js",
+    "start": "node --import @pulse/sdk/register src/server.js",
     "seed": "node src/scripts/seed.js",
     "test:auth": "node src/test/auth.js",
     "test:categories": "node src/test/categories.js",
@@ -21,6 +21,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@pulse/sdk": "file:../pulse/sdk",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

@@ -76,6 +76,7 @@ export function createPulseClient(options = {}) {
   }
 
   function captureException(error, extra = {}) {
+    if (!state.dsn) return null;
     const serialized = serializeError(error);
     const event = {
       ...serialized,
@@ -84,7 +85,7 @@ export function createPulseClient(options = {}) {
       url: typeof location !== 'undefined' ? location.href : extra.url || '',
       environment: state.environment,
       release: state.release,
-      user: state.user,
+      user: extra.user || state.user,
       tags: { ...state.tags, ...(extra.tags || {}) },
       breadcrumbs: [...state.breadcrumbs],
       extra: safeJson(extra.extra) || {},
@@ -101,10 +102,20 @@ export function createPulseClient(options = {}) {
     return captureException({ name: 'Message', message, stack: '' }, { level });
   }
 
-  function install() {
-    if (state.installed || typeof window === 'undefined') return;
-    state.installed = true;
+  function installNode() {
+    if (typeof process === 'undefined' || typeof process.on !== 'function') return;
+    process.on('uncaughtException', (error) => {
+      captureException(error, { level: 'fatal', extra: { kind: 'uncaughtException' } });
+    });
+    process.on('unhandledRejection', (reason) => {
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      captureException(error, { level: 'error', extra: { kind: 'unhandledRejection' } });
+    });
+    process.on('beforeExit', () => { flush(); });
+  }
 
+  function installBrowser() {
+    if (typeof window === 'undefined') return;
     window.addEventListener('error', (event) => {
       captureException(event.error || {
         name: 'Error',
@@ -112,40 +123,27 @@ export function createPulseClient(options = {}) {
         stack: `${event.filename}:${event.lineno}:${event.colno}`,
       });
     });
-
     window.addEventListener('unhandledrejection', (event) => {
       captureException(event.reason || { name: 'UnhandledRejection', message: 'Unhandled promise rejection' });
     });
-
-    const origConsoleError = console.error;
-    console.error = (...args) => {
-      addBreadcrumb({
-        type: 'debug',
-        category: 'console',
-        message: args.map(String).join(' ').slice(0, 300),
-        level: 'error',
-      });
-      origConsoleError.apply(console, args);
-    };
-
-    window.addEventListener('click', (event) => {
-      const el = event.target;
-      if (!el) return;
-      const label = el.innerText || el.getAttribute?.('aria-label') || el.tagName;
-      addBreadcrumb({
-        type: 'user',
-        category: 'ui.click',
-        message: String(label).replace(/\s+/g, ' ').trim().slice(0, 80),
-      });
-    }, { capture: true });
-
     window.addEventListener('pagehide', () => { flush(); });
+  }
+
+  function install() {
+    if (state.installed) return;
+    state.installed = true;
+    installBrowser();
+    installNode();
   }
 
   return {
     init(next = {}) {
-      Object.assign(state, next);
-      if (next.dsn) state.dsn = next.dsn;
+      const dsn = next.dsn || process.env.PULSE_DSN || state.dsn;
+      Object.assign(state, next, {
+        dsn,
+        environment: next.environment || process.env.PULSE_ENVIRONMENT || process.env.NODE_ENV || state.environment,
+        release: next.release || process.env.PULSE_RELEASE || state.release,
+      });
       install();
       return this;
     },

@@ -15,6 +15,10 @@ export function errorHandler(err, _req, res, _next) {
     return res.status(400).json({ ok: false, error: err.message });
   }
 
+  if (err instanceof mongoose.Error.CastError) {
+    return res.status(400).json({ ok: false, error: 'Invalid id' });
+  }
+
   if (err?.code === 11000) {
     const field = Object.keys(err.keyPattern || {})[0] || 'field';
     return res.status(409).json({ ok: false, error: `${field} already exists` });

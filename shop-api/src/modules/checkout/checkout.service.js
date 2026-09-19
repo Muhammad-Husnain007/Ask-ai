@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { ApiError } from '../../utils/ApiError.js';
 import { clearCart, getOrCreateCart } from '../cart/cart.service.js';
 import { Order } from '../orders/order.model.js';
@@ -58,32 +59,42 @@ export async function confirmCheckout(id, user, paymentRef) {
   if (checkout.status === 'paid') throw ApiError.conflict('Checkout already paid');
   if (checkout.status !== 'pending') throw ApiError.badRequest('Checkout cannot be confirmed');
 
-  for (const item of checkout.items) {
-    const updated = await Product.findOneAndUpdate(
-      { _id: item.product, stock: { $gte: item.quantity }, isActive: true },
-      { $inc: { stock: -item.quantity } },
-      { new: true },
-    );
-    if (!updated) throw ApiError.badRequest('Stock changed, recreate checkout');
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    for (const item of checkout.items) {
+      const updated = await Product.findOneAndUpdate(
+        { _id: item.product, stock: { $gte: item.quantity }, isActive: true },
+        { $inc: { stock: -item.quantity } },
+        { new: true, session },
+      );
+      if (!updated) throw ApiError.badRequest('Stock changed, recreate checkout');
+    }
+
+    const [order] = await Order.create([{
+      user: user.id,
+      checkout: checkout.id,
+      items: checkout.items,
+      address: checkout.address,
+      subtotal: checkout.subtotal,
+      shipping: checkout.shipping,
+      total: checkout.total,
+      currency: checkout.currency,
+      status: 'paid',
+      paymentRef: paymentRef || `pay_${checkout.id}`,
+    }], { session });
+
+    checkout.status = 'paid';
+    checkout.paymentRef = order.paymentRef;
+    checkout.order = order.id;
+    await checkout.save({ session });
+    await session.commitTransaction();
+    await clearCart(user.id);
+    return { checkout, order };
+  } catch (error) {
+    if (session.inTransaction()) await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-
-  const order = await Order.create({
-    user: user.id,
-    checkout: checkout.id,
-    items: checkout.items,
-    address: checkout.address,
-    subtotal: checkout.subtotal,
-    shipping: checkout.shipping,
-    total: checkout.total,
-    currency: checkout.currency,
-    status: 'paid',
-    paymentRef: paymentRef || `pay_${checkout.id}`,
-  });
-
-  checkout.status = 'paid';
-  checkout.paymentRef = order.paymentRef;
-  checkout.order = order.id;
-  await checkout.save();
-  await clearCart(user.id);
-  return { checkout, order };
 }
