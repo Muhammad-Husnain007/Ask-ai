@@ -1,0 +1,10 @@
+{
+  "name": "@pulse/sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  }
+}
