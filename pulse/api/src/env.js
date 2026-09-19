@@ -18,7 +18,7 @@ if (!process.env.GITHUB_REPO) {
   process.env.GITHUB_REPO = 'Muhammad-Husnain007/Ask-ai';
 }
 if (!process.env.MAIL_TO) {
-  process.env.MAIL_TO = 'hasnainilyas007@gmail.com';
+  process.env.MAIL_TO = 'mh8169951@gmail.com';
 }
 if (!process.env.REPO_ROOT) {
   process.env.REPO_ROOT = path.resolve(__dirname, '..', '..', '..');

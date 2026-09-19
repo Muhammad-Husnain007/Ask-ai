@@ -47,7 +47,7 @@ app.get('/health', async () => ({
     gemini: Boolean(process.env.GEMINI_API_KEY),
     github: Boolean(process.env.GITHUB_TOKEN),
     smtp: Boolean(process.env.SMTP_USER || process.env.GMAIL_USER),
-    mailTo: process.env.MAIL_TO || 'hasnainilyas007@gmail.com',
+    mailTo: process.env.MAIL_TO || 'mh8169951@gmail.com',
   },
 }));
 

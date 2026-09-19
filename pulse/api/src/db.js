@@ -79,12 +79,14 @@ ensureColumn('issues', 'agent_solution', 'TEXT');
 ensureColumn('issues', 'pr_url', 'TEXT');
 ensureColumn('issues', 'emailed_at', 'TEXT');
 ensureColumn('issues', 'emailed_to', 'TEXT');
-ensureColumn('projects', 'notify_email', "TEXT NOT NULL DEFAULT 'hasnainilyas007@gmail.com'");
+ensureColumn('projects', 'notify_email', "TEXT NOT NULL DEFAULT 'mh8169951@gmail.com'");
 
 db.prepare(`
   UPDATE projects
-  SET notify_email = 'hasnainilyas007@gmail.com'
-  WHERE notify_email IS NULL OR trim(notify_email) = ''
+  SET notify_email = 'mh8169951@gmail.com'
+  WHERE notify_email IS NULL
+     OR trim(notify_email) = ''
+     OR notify_email = 'hasnainilyas007@gmail.com'
 `).run();
 
 const DEMO_KEY = 'pk_live_demo_pulse';

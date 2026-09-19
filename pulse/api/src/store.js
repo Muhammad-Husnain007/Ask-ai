@@ -94,7 +94,7 @@ export function saveAgentResult(id, { status, summary, solution, prUrl, emailedA
   return stmts.getIssue.get(id);
 }
 
-export const DEFAULT_NOTIFY_EMAIL = 'hasnainilyas007@gmail.com';
+export const DEFAULT_NOTIFY_EMAIL = 'mh8169951@gmail.com';
 
 export function normalizeNotifyEmail(value) {
   const emails = String(value || '')

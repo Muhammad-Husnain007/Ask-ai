@@ -105,7 +105,15 @@ export function createPulseClient(options = {}) {
   function installNode() {
     if (typeof process === 'undefined' || typeof process.on !== 'function') return;
     process.on('uncaughtException', (error) => {
-      captureException(error, { level: 'fatal', extra: { kind: 'uncaughtException' } });
+      captureException(error, {
+        level: 'fatal',
+        url: typeof process !== 'undefined' ? String(process.argv?.[1] || '') : '',
+        extra: {
+          kind: 'uncaughtException',
+          cwd: typeof process !== 'undefined' ? process.cwd() : '',
+          main: typeof process !== 'undefined' ? String(process.argv?.[1] || '') : '',
+        },
+      });
     });
     process.on('unhandledRejection', (reason) => {
       const error = reason instanceof Error ? reason : new Error(String(reason));

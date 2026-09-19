@@ -372,7 +372,7 @@ function LivePage({ events }) {
 function SetupPage() {
   const [projects, setProjects] = useState([]);
   const [name, setName] = useState('Checkout API');
-  const [notifyEmail, setNotifyEmail] = useState('hasnainilyas007@gmail.com');
+  const [notifyEmail, setNotifyEmail] = useState('mh8169951@gmail.com');
   const [drafts, setDrafts] = useState({});
   const [status, setStatus] = useState('');
   const [selected, setSelected] = useState(null);
@@ -405,7 +405,7 @@ PULSE_DSN=${localDsn}
   return (
     <div className="p-8">
       <h1 className="text-2xl font-semibold tracking-tight">Setup</h1>
-      <p className="mt-1 mb-8 max-w-3xl text-sm text-zinc-500">Add Pulse to any local or production app with the project DSN. When an error arrives, the AI agent opens a PR and emails the address saved on that project.</p>
+      <p className="mt-1 mb-8 max-w-3xl text-sm text-zinc-500">Add Pulse to any local or production app with the project DSN. When an error arrives, the AI agent patches the client GitHub base branch, opens a PR with those changes, and emails that PR.</p>
 
       <div className="mb-6 grid gap-4 md:grid-cols-2">
         <div className="rounded-2xl border border-white/8 bg-ink-900 p-5 text-sm">

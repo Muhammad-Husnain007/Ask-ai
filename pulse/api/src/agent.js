@@ -1,11 +1,13 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { GoogleGenAI } from '@google/genai';
-import { createFixPullRequest } from './github.js';
+import { createFixPullRequest, gatherGithubContext } from './github.js';
 import { emailFixReport, resolveNotifyEmail } from './mailer.js';
+import { applyLocalFiles, findLocalParseErrors } from './source.js';
 import { getIssue, getProject, saveAgentResult, setAgentStatus } from './store.js';
 
 const repoRoot = path.resolve(process.env.REPO_ROOT || path.join(process.cwd(), '..', '..'));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const isRetryableAi = (error) => /UNAVAILABLE|503|high demand|RESOURCE_EXHAUSTED|429|overloaded/i.test(error?.message || String(error || ''));
 
 function parseJsonObject(raw) {
   const cleaned = String(raw || '')
@@ -18,82 +20,51 @@ function parseJsonObject(raw) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-function stackPaths(stack) {
-  const matches = String(stack || '').match(/[A-Za-z0-9_./\\-]+\.(?:js|jsx|ts|tsx|mjs|cjs)/g) || [];
-  return [...new Set(matches.map((item) => item.replace(/\\/g, '/')))].slice(0, 6);
+function normalizePath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
-function resolveLocalFile(relOrName) {
-  const normalized = relOrName.replace(/\\/g, '/').replace(/^\/+/, '');
-  const direct = path.resolve(repoRoot, normalized);
-  if (direct.startsWith(repoRoot) && fs.existsSync(direct) && fs.statSync(direct).isFile()) {
-    return { path: path.relative(repoRoot, direct).replace(/\\/g, '/'), abs: direct };
-  }
-  const base = path.basename(normalized);
-  const queue = [repoRoot];
-  const skip = new Set(['node_modules', '.git', 'dist', 'data']);
-  while (queue.length) {
-    const dir = queue.shift();
-    let entries = [];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
+function isPlausiblePatch(original, next) {
+  const current = String(original || '');
+  const updated = String(next || '');
+  if (!updated.trim() || updated === current) return false;
+  const originalLines = current.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (originalLines.length <= 12) return true;
+  const updatedSet = new Set(updated.split('\n').map((line) => line.trim()).filter(Boolean));
+  const kept = originalLines.filter((line) => updatedSet.has(line)).length;
+  return kept / originalLines.length >= 0.45;
+}
+
+function selectPatchedFiles(aiFiles, contextFiles) {
+  const allowed = new Map(contextFiles.map((file) => [file.path, file.contents]));
+  const out = [];
+  for (const file of Array.isArray(aiFiles) ? aiFiles : []) {
+    const requested = normalizePath(file?.path);
+    if (!requested || requested.includes('..') || requested.startsWith('pulse/incidents/')) continue;
+    let target = allowed.has(requested) ? requested : null;
+    if (!target) {
+      const base = path.posix.basename(requested);
+      target = [...allowed.keys()].find((item) => item === requested || item.endsWith(`/${base}`)) || null;
     }
-    for (const entry of entries) {
-      if (skip.has(entry.name)) continue;
-      const abs = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        queue.push(abs);
-      } else if (entry.name === base) {
-        return { path: path.relative(repoRoot, abs).replace(/\\/g, '/'), abs };
-      }
-    }
-  }
-  return null;
-}
-
-function gatherContext(stack, culprit) {
-  const names = [...stackPaths(stack), culprit || ''].filter(Boolean);
-  const files = [];
-  for (const name of names) {
-    const found = resolveLocalFile(name);
-    if (!found) continue;
-    if (files.some((file) => file.path === found.path)) continue;
-    const contents = fs.readFileSync(found.abs, 'utf8').slice(0, 20_000);
-    files.push({ path: found.path, contents });
-    if (files.length >= 4) break;
-  }
-  return files;
-}
-
-function safeFiles(files) {
-  if (!Array.isArray(files)) return [];
-  return files.slice(0, 5).map((file) => {
-    const rel = String(file?.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!rel || rel.includes('..') || rel.startsWith('.git/')) return null;
-    const abs = path.resolve(repoRoot, rel);
-    if (!abs.startsWith(repoRoot)) return null;
+    if (!target) continue;
     const contents = String(file.contents ?? file.content ?? '');
-    if (!contents || contents.length > 200_000) return null;
-    return { path: rel, abs, contents };
-  }).filter(Boolean);
-}
-
-function applyLocalFiles(files) {
-  for (const file of files) {
-    fs.mkdirSync(path.dirname(file.abs), { recursive: true });
-    fs.writeFileSync(file.abs, file.contents, 'utf8');
+    if (!isPlausiblePatch(allowed.get(target), contents)) continue;
+    if (out.some((item) => item.path === target)) continue;
+    out.push({ path: target, contents });
   }
+  return out;
 }
 
-async function analyzeWithGemini({ issue, event, contextFiles }) {
+async function analyzeWithGemini({ issue, event, contextFiles, repo, base }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY missing');
+  const preferred = (process.env.PRIMARY_GEMINI_MODEL || 'gemini-3.6-flash').replace(/^models\//, '');
+  const models = [...new Set([preferred, 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest'])];
   const ai = new GoogleGenAI({ apiKey });
-  const model = (process.env.PRIMARY_GEMINI_MODEL || 'gemini-3.6-flash').replace(/^models\//, '');
+  const allowedPaths = contextFiles.map((file) => file.path);
   const prompt = `You are Pulse, a production incident agent.
-Given a runtime error, find the root cause and implement a minimal, safe code fix.
+The files below are the CURRENT contents of the client's GitHub branch \`${base}\` in \`${repo}\`.
+Patch those files in place so the crash is fixed, then a pull request can be opened against that same base branch.
 
 Return ONLY JSON:
 {
@@ -103,14 +74,17 @@ Return ONLY JSON:
   "prTitle": "fix: ...",
   "prBody": "markdown PR description",
   "commitMessage": "fix: ...",
-  "files": [{"path":"relative/from/repo/root.js","contents":"full file contents"}]
+  "files": [{"path":"exact/path/from/the/list.js","contents":"full updated file contents"}]
 }
 
 Rules:
-- Prefer a real code fix in existing files when context is provided.
-- If this looks like a deliberate test/demo error, or you cannot locate production code, return files: [] and still explain the fix.
-- Never include markdown fences.
-- Keep the change small. Do not remove unrelated features.
+- Only edit these exact paths: ${JSON.stringify(allowedPaths)}
+- Return the complete file contents, not a diff and not a snippet.
+- Keep existing style, imports, comments, and unrelated logic.
+- Change the smallest safe amount of code that fixes the crash.
+- Do not add markdown, incident notes, or new files.
+- If this is a SyntaxError and the stack only shows Node internals, inspect the provided source and repair the invalid JavaScript.
+- If you cannot make a safe code fix, return files: [] and explain in solution.
 
 Issue title: ${issue.title}
 Culprit: ${issue.culprit || 'n/a'}
@@ -120,15 +94,27 @@ Environment: ${event.environment || 'n/a'}
 Stack:
 ${event.stack || issue.title}
 
-Existing files:
-${JSON.stringify(contextFiles.map((file) => ({ path: file.path, contents: file.contents.slice(0, 12000) })))}`;
+Client base-branch files:
+${JSON.stringify(contextFiles.map((file) => ({ path: file.path, contents: file.contents.slice(0, 16000) })))}`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: { responseMimeType: 'application/json' },
-  });
-  return parseJsonObject(response.text || '');
+  let lastError;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: { responseMimeType: 'application/json' },
+        });
+        return parseJsonObject(response.text || '');
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableAi(error) && !/NOT_FOUND|404/i.test(error?.message || '')) throw error;
+        await sleep(1500 * (attempt + 1));
+      }
+    }
+  }
+  throw lastError;
 }
 
 export async function runFixAgent({ issue, event, logger, io, force = false, project = null }) {
@@ -153,57 +139,70 @@ export async function runFixAgent({ issue, event, logger, io, force = false, pro
   let agentError = '';
 
   try {
-    const contextFiles = gatherContext(event.stack, issue.culprit);
-    try {
-      analysis = { ...analysis, ...(await analyzeWithGemini({ issue, event, contextFiles })) };
-    } catch (error) {
-      agentError = error.message || 'AI analysis failed';
-      analysis = {
-        ...analysis,
-        summary: `Gemini could not complete the analysis: ${agentError}`,
-        rootCause: issue.title,
-        solution: 'Review the stack trace, add a guard or retry around the failing call, and re-run the agent after GEMINI_API_KEY is set.',
-      };
-      logger?.error?.({ err: error }, 'Pulse AI analysis failed');
-    }
-    const files = safeFiles(analysis.files);
-    if (!files.length && (analysis.solution || analysis.summary || analysis.rootCause)) {
-      const rel = `pulse/incidents/${issue.id}.md`;
-      files.push({
-        path: rel,
-        abs: path.resolve(repoRoot, rel),
-        contents: [
-          `# ${issue.title}`,
-          '',
-          `Tracked issue: \`${issue.id}\``,
-          '',
-          '## Root cause',
-          '',
-          analysis.rootCause || 'See solution below.',
-          '',
-          '## Solution',
-          '',
-          analysis.solution || analysis.summary || 'No solution generated.',
-        ].join('\n'),
-      });
-    }
-    if (files.length) {
-      applyLocalFiles(files);
-      const pr = await createFixPullRequest({
-        branch: `pulse/fix-${issue.id}`.replace(/[^a-zA-Z0-9/_-]/g, '-').slice(0, 60),
-        title: analysis.prTitle || `fix: ${issue.title}`.slice(0, 70),
-        body: [
-          analysis.prBody || analysis.solution || analysis.summary,
-          '',
-          `Tracked issue: ${issue.id}`,
-          event.url ? `Error URL: ${event.url}` : '',
-        ].filter(Boolean).join('\n'),
-        files,
-      });
-      if (pr.ok) prUrl = pr.url;
-      else agentError = pr.reason;
+    const localFiles = findLocalParseErrors(repoRoot, {
+      release: event.release || event.release_name,
+      cwd: event.extra?.cwd,
+    });
+    const github = await gatherGithubContext({
+      stack: event.stack,
+      culprit: issue.culprit,
+      release: event.release || event.release_name,
+      extra: event.extra,
+      localFiles,
+    });
+    if (!github.ok) {
+      agentError = github.reason || 'GitHub repo is not available';
+    } else if (!github.files.length) {
+      agentError = 'Could not match this stack to client source files.';
     } else {
-      agentError = agentError || 'No production files were changed. Solution is advisory.';
+      try {
+        analysis = {
+          ...analysis,
+          ...(await analyzeWithGemini({
+            issue,
+            event,
+            contextFiles: github.files,
+            repo: github.repoFull,
+            base: github.base,
+          })),
+        };
+      } catch (error) {
+        agentError = error.message || 'AI analysis failed';
+        analysis = {
+          ...analysis,
+          summary: `Gemini could not complete the analysis: ${agentError}`,
+          rootCause: issue.title,
+          solution: 'Review the stack trace on the client base branch and re-run the agent after the model is available.',
+        };
+        logger?.error?.({ err: error }, 'Pulse AI analysis failed');
+      }
+
+      const files = selectPatchedFiles(analysis.files, github.files);
+      if (files.length) {
+        applyLocalFiles(repoRoot, files);
+        const pr = await createFixPullRequest({
+          branch: `pulse/fix-${issue.id}`.replace(/[^a-zA-Z0-9/_-]/g, '-').slice(0, 60),
+          title: analysis.prTitle || `fix: ${issue.title}`.slice(0, 70),
+          body: [
+            analysis.prBody || analysis.solution || analysis.summary,
+            '',
+            `Tracked issue: ${issue.id}`,
+            `Base branch: ${github.base}`,
+            `Repo: ${github.repoFull}`,
+            event.url ? `Error URL: ${event.url}` : '',
+            '',
+            'This PR applies the AI patch onto the current client base-branch files.',
+          ].filter(Boolean).join('\n'),
+          files,
+        });
+        if (pr.ok && pr.url) prUrl = pr.url;
+        else if (pr.unchanged) {
+          prUrl = current.pr_url || '';
+          agentError = agentError || 'Code fix is ready locally. GitHub base already contains the same patch, so no new code diff was opened.';
+        } else agentError = pr.reason || 'GitHub PR failed';
+      } else {
+        agentError = agentError || 'AI did not return a safe patch against the client source files.';
+      }
     }
   } catch (error) {
     agentError = error.message || 'AI agent failed';
@@ -230,7 +229,7 @@ export async function runFixAgent({ issue, event, logger, io, force = false, pro
   }
 
   const saved = saveAgentResult(issue.id, {
-    status: agentError && !analysis.summary ? 'failed' : 'done',
+    status: agentError && !prUrl && !analysis.summary ? 'failed' : 'done',
     summary: analysis.summary || analysis.rootCause || '',
     solution: [analysis.rootCause, analysis.solution, agentError].filter(Boolean).join('\n\n'),
     prUrl,
