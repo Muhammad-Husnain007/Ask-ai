@@ -4,7 +4,6 @@ import { Activity, AlertTriangle, Bot, CheckCircle2, CircleDot, GitPullRequest, 
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { io } from 'socket.io-client';
 import { createProject, getIssue, getIssues, getProjects, getStats, patchIssue, patchProject, runIssueAgent } from './api.js';
-import { init as initPulse, captureException, captureMessage, setUser } from '../../sdk/src/index.js';
 
 function timeAgo(iso) {
   if (!iso) return '';
@@ -184,7 +183,7 @@ function IssuesPage({ refreshKey }) {
               <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">Loading issues…</td></tr>
             )}
             {issues && issues.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">{loadError || 'No issues yet. Throw a test error from Setup.'}</td></tr>
+              <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">{loadError || 'No issues yet. Connected apps will appear here when they report errors.'}</td></tr>
             )}
             {(issues || []).map((issue) => (
               <tr key={issue.id} className="border-t border-white/5 bg-ink-900/40 hover:bg-white/[.03]">
@@ -388,12 +387,6 @@ function SetupPage() {
   };
 
   useEffect(() => {
-    initPulse({
-      dsn: '/ingest/pk_live_demo_pulse',
-      environment: 'production',
-      release: 'pulse-dashboard@1.0.0',
-    });
-    setUser({ id: 'local-dev', email: 'you@localhost' });
     refresh().catch(() => setProjects([]));
   }, []);
 
@@ -432,30 +425,6 @@ try {
           <p className="mb-3 text-zinc-500">Deploy Pulse, then replace the host. Same project key works.</p>
           <code className="block break-all rounded-lg bg-black/30 px-3 py-2 font-mono text-[12px] text-orange-200">https://pulse.yourdomain.com/ingest/{active?.public_key || 'pk_live_demo_pulse'}</code>
         </div>
-      </div>
-
-      <div className="mb-6 flex gap-3">
-        <button
-          onClick={() => {
-            setUser({ id: 'user_88', email: 'buyer@shop.dev' });
-            captureException(new Error('Payment gateway timeout after 8000ms'));
-          }}
-          className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-ink-950 hover:bg-orange-400"
-        >
-          Throw test error
-        </button>
-        <button
-          onClick={() => captureMessage('Slow checkout warning: p95 2.4s', 'warning')}
-          className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/5"
-        >
-          Send warning
-        </button>
-        <button
-          onClick={() => { throw new Error('Uncaught render crash from Pulse playground'); }}
-          className="rounded-lg border border-red-500/30 px-4 py-2 text-sm text-red-300 hover:bg-red-500/10"
-        >
-          Uncaught throw
-        </button>
       </div>
 
       <pre className="mb-8 overflow-auto rounded-2xl border border-white/8 bg-ink-900 p-5 font-mono text-[12px] leading-relaxed text-zinc-300">{snippet}</pre>

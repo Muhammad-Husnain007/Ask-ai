@@ -26,5 +26,3 @@ export const getIssue = (id) => api(`/api/issues/${id}`);
 export const patchIssue = (id, status) => api(`/api/issues/${id}`, { method: 'PATCH', body: { status } });
 export const runIssueAgent = (id) => api(`/api/issues/${id}/agent`, { method: 'POST', body: {} });
 export const getStats = (projectId) => api(`/api/stats${projectId ? `?projectId=${projectId}` : ''}`);
-
-export const DEMO_DSN = `${window.location.origin}/ingest/pk_live_demo_pulse`;
