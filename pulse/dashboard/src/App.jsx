@@ -37,6 +37,21 @@ const agentClass = {
   idle: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
 };
 
+const statusClass = {
+  open: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+  resolved: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+  ignored: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
+};
+
+function StatusPill({ status }) {
+  const value = status || 'open';
+  return (
+    <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass[value] || statusClass.open}`}>
+      {value}
+    </span>
+  );
+}
+
 function AgentPill({ status }) {
   const value = status || 'idle';
   return (
@@ -49,7 +64,7 @@ function AgentPill({ status }) {
 const ISSUE_VIEWS = [
   { id: 'open', label: 'Open issues', to: '/', stat: 'openIssues', icon: CircleDot, empty: 'No open issues yet. Connected apps will appear here when they report errors.' },
   { id: 'fixed', label: 'Fixed issues', to: '/fixed', stat: 'fixedIssues', icon: CheckCircle2, empty: 'No AI-fixed issues yet.' },
-  { id: 'create-pull', label: 'Create pull', to: '/pulls', stat: 'createPull', icon: GitPullRequest, empty: 'No pull requests created yet.' },
+  { id: 'create-pull', label: 'Open pull | PR', to: '/pulls', stat: 'createPull', icon: GitPullRequest, empty: 'No open pull requests yet.' },
   { id: 'merge-pull', label: 'Merge pull', to: '/merged', stat: 'mergePull', icon: GitMerge, empty: 'No merged pull requests yet.' },
 ];
 
@@ -60,6 +75,22 @@ const DROPDOWN_VIEWS = [
 
 function viewPath(id) {
   return DROPDOWN_VIEWS.find((item) => item.id === id)?.to || '/';
+}
+
+function PullLink({ url, className = '' }) {
+  if (!url) return null;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => event.stopPropagation()}
+      className={`inline-flex items-center gap-1 break-all text-emerald-300 hover:underline ${className}`}
+    >
+      <GitPullRequest size={12} />
+      {url}
+    </a>
+  );
 }
 
 function usePulseLive(onEvent) {
@@ -198,19 +229,17 @@ function IssuesPage({ refreshKey, view = 'open' }) {
           <thead className="bg-ink-900 text-[11px] uppercase tracking-wider text-zinc-500">
             <tr>
               <th className="px-4 py-3">Issue</th>
-              <th className="px-4 py-3">Level</th>
-              <th className="px-4 py-3">AI</th>
-              <th className="px-4 py-3">Events</th>
+              <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Users</th>
               <th className="px-4 py-3">Last seen</th>
             </tr>
           </thead>
           <tbody>
             {issues === null && (
-              <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">Loading issues…</td></tr>
+              <tr><td colSpan={4} className="px-4 py-12 text-center text-zinc-500">Loading issues…</td></tr>
             )}
             {issues && issues.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-12 text-center text-zinc-500">{loadError || currentView.empty}</td></tr>
+              <tr><td colSpan={4} className="px-4 py-12 text-center text-zinc-500">{loadError || currentView.empty}</td></tr>
             )}
             {(issues || []).map((issue) => (
               <tr key={issue.id} className="border-t border-white/5 bg-ink-900/40 hover:bg-white/[.03]">
@@ -218,14 +247,10 @@ function IssuesPage({ refreshKey, view = 'open' }) {
                   <Link to={`/issues/${issue.id}`} className="block">
                     <div className="font-medium text-zinc-100">{issue.title}</div>
                     <div className="mt-0.5 font-mono text-[11px] text-zinc-500">{issue.culprit || issue.fingerprint}</div>
-                    {issue.pr_url && (
-                      <div className="mt-1 text-[11px] text-emerald-300">{issue.pr_url.replace('https://github.com/', '')}</div>
-                    )}
                   </Link>
+                  <PullLink url={issue.pr_url} className="mt-1 font-mono text-[11px]" />
                 </td>
-                <td className="px-4 py-3"><Badge level={issue.level} /></td>
-                <td className="px-4 py-3"><AgentPill status={issue.agent_status} /></td>
-                <td className="px-4 py-3 font-mono text-zinc-300">{issue.count}</td>
+                <td className="px-4 py-3"><StatusPill status={issue.status} /></td>
                 <td className="px-4 py-3 font-mono text-zinc-300">{issue.user_count}</td>
                 <td className="px-4 py-3 text-zinc-400">{timeAgo(issue.last_seen)}</td>
               </tr>
@@ -320,11 +345,7 @@ function IssueDetail() {
           <pre className="mb-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-xl bg-black/30 p-3 font-mono text-[12px] text-orange-100/90">{issue.agent_solution}</pre>
         )}
         <div className="flex flex-wrap gap-4 text-xs text-zinc-400">
-          {issue.pr_url && (
-            <a href={issue.pr_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-emerald-300 hover:underline">
-              <GitPullRequest size={14} /> Open pull request
-            </a>
-          )}
+          {issue.pr_url && <PullLink url={issue.pr_url} className="text-xs" />}
           <span className="inline-flex items-center gap-1">
             <Mail size={14} />
             PR alerts: {issue.emailed_to || issue.notify_email || 'not set'}
@@ -346,17 +367,6 @@ function IssueDetail() {
             <Row k="Release" v={latest?.release} />
             <Row k="User" v={latest?.user?.email || latest?.user?.id || 'anonymous'} />
             <Row k="SDK" v={latest?.sdk} />
-          </div>
-          <div className="rounded-2xl border border-white/8 bg-ink-900 p-5">
-            <h2 className="mb-3 text-sm font-semibold">Breadcrumbs</h2>
-            <div className="max-h-64 space-y-2 overflow-auto text-xs">
-              {(latest?.breadcrumbs || []).length === 0 && <div className="text-zinc-500">None</div>}
-              {(latest?.breadcrumbs || []).map((crumb, index) => (
-                <div key={index} className="rounded-lg bg-black/20 px-2 py-1.5 font-mono text-zinc-400">
-                  <span className="text-zinc-500">{crumb.category}</span> · {crumb.message}
-                </div>
-              ))}
-            </div>
           </div>
         </section>
       </div>

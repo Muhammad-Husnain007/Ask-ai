@@ -13,6 +13,11 @@ function transporter() {
   });
 }
 
+export function isPrEmailEnabled() {
+  const value = String(process.env.SENDPRVIAEMAIL ?? process.env.SEND_PR_VIA_EMAIL ?? 'true').trim();
+  return !/^(false|0|no|off)$/i.test(value);
+}
+
 export function resolveNotifyEmail(project, issue) {
   return normalizeNotifyEmail(
     project?.notify_email || issue?.notify_email || process.env.MAIL_TO || DEFAULT_NOTIFY_EMAIL,
@@ -20,6 +25,9 @@ export function resolveNotifyEmail(project, issue) {
 }
 
 export async function emailFixReport({ issue, event, analysis, prUrl, error, to }) {
+  if (!isPrEmailEnabled()) {
+    return { ok: true, skipped: true, to: '' };
+  }
   const mailer = transporter();
   if (!mailer) {
     return { ok: false, reason: 'SMTP_USER / SMTP_PASS missing' };

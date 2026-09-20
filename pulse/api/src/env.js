@@ -20,6 +20,9 @@ if (!process.env.GITHUB_REPO) {
 if (!process.env.MAIL_TO) {
   process.env.MAIL_TO = 'mh8169951@gmail.com';
 }
+if (process.env.SENDPRVIAEMAIL == null && process.env.SEND_PR_VIA_EMAIL == null) {
+  process.env.SENDPRVIAEMAIL = 'true';
+}
 if (!process.env.REPO_ROOT) {
   process.env.REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 }

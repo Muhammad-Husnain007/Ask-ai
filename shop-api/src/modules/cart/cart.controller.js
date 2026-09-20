@@ -12,7 +12,7 @@ export const addItem = asyncHandler(async (req, res) => {
 });
 
 export const patchItem = asyncHandler(async (req, res) => {
-  const cart = await updateCartItem(req.user.id, req.validated.params.productId, req.validated.body.quantity);
+  const cart = await updateCartIte(req.user.id, req.validated.params.productId, req.validated.body.quantity);
   res.json({ ok: true, cart });
 });
 

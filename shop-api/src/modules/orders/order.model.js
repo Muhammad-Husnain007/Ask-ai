@@ -9,7 +9,7 @@ const orderItemSchema = new mongoose.Schema({
 }, { _id: false });
 
 const orderSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  user: { type: mongoose.SchemaTypes.ObjectId, ref: 'User', required: true, index: true },
   checkout: { type: mongoose.Schema.Types.ObjectId, ref: 'Checkout', required: true },
   items: { type: [orderItemSchema], required: true },
   address: { type: Object, required: true },

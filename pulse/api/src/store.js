@@ -72,6 +72,7 @@ const stmts = {
         pr_url = CASE WHEN @prUrl != '' THEN @prUrl ELSE pr_url END,
         pr_merged = CASE WHEN @prUrl != '' THEN 0 ELSE pr_merged END,
         pr_closed = CASE WHEN @prUrl != '' THEN 0 ELSE pr_closed END,
+        status = CASE WHEN @prUrl != '' THEN 'resolved' ELSE status END,
         emailed_at = @emailedAt,
         emailed_to = @emailedTo
     WHERE id = @id
@@ -150,6 +151,17 @@ export function updateProject(id, { name, notifyEmail } = {}) {
   return stmts.projectById.get(id);
 }
 
+function resolveFinishedFixes() {
+  db.prepare(`
+    UPDATE issues
+    SET status = 'resolved'
+    WHERE status = 'open'
+      AND agent_status = 'done'
+      AND pr_url IS NOT NULL
+      AND trim(pr_url) != ''
+  `).run();
+}
+
 export function applyPullStates(pulls = []) {
   const byUrl = new Map(
     pulls
@@ -173,11 +185,16 @@ export function applyPullStates(pulls = []) {
     UPDATE issues
     SET status = 'resolved',
         pr_closed = CASE WHEN pr_merged = 1 THEN 1 ELSE pr_closed END
-    WHERE pr_merged = 1 AND status = 'open'
+    WHERE status = 'open'
+      AND (
+        pr_merged = 1
+        OR (agent_status = 'done' AND pr_url IS NOT NULL AND trim(pr_url) != '')
+      )
   `).run();
 }
 
 export function listIssues({ projectId, status, environment, q, limit = 80 } = {}) {
+  resolveFinishedFixes();
   const clauses = [];
   const params = [];
   if (projectId) {
@@ -194,6 +211,7 @@ export function listIssues({ projectId, status, environment, q, limit = 80 } = {
     clauses.push('IFNULL(i.pr_closed, 0) = 1');
   } else if (status === 'open') {
     clauses.push("i.status = 'open'");
+    clauses.push("NOT (i.agent_status = 'done' AND i.pr_url IS NOT NULL AND trim(i.pr_url) != '')");
   } else if (status && status !== 'all') {
     clauses.push('i.status = ?');
     params.push(status);
@@ -238,12 +256,18 @@ export function setIssueStatus(id, status) {
 }
 
 export function stats(projectId) {
+  resolveFinishedFixes();
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const issueFilter = projectId ? 'AND project_id = ?' : '';
   const params = projectId ? [since, projectId] : [since];
   const scope = projectId ? 'AND project_id = ?' : '';
   const scopeParams = projectId ? [projectId] : [];
-  const open = db.prepare(`SELECT COUNT(*) AS n FROM issues WHERE status = 'open' ${scope}`).get(...scopeParams);
+  const open = db.prepare(`
+    SELECT COUNT(*) AS n FROM issues
+    WHERE status = 'open'
+      AND NOT (agent_status = 'done' AND pr_url IS NOT NULL AND trim(pr_url) != '')
+      ${scope}
+  `).get(...scopeParams);
   const fixed = db.prepare(`
     SELECT COUNT(*) AS n FROM issues
     WHERE agent_status = 'done' AND pr_url IS NOT NULL AND trim(pr_url) != '' ${scope}
@@ -270,7 +294,9 @@ export function stats(projectId) {
   const byLevel = db.prepare(`
     SELECT level, COUNT(*) AS count
     FROM issues
-    WHERE status = 'open' ${projectId ? 'AND project_id = ?' : ''}
+    WHERE status = 'open'
+      AND NOT (agent_status = 'done' AND pr_url IS NOT NULL AND trim(pr_url) != '')
+      ${projectId ? 'AND project_id = ?' : ''}
     GROUP BY level
   `).all(...(projectId ? [projectId] : []));
   return {

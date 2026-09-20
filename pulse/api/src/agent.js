@@ -246,10 +246,10 @@ export async function runFixAgent({ issue, event, logger, io, force = false, pro
       error: agentError,
       to: mailTo,
     });
-    if (mailed.ok) {
+    if (mailed.ok && !mailed.skipped) {
       emailedAt = new Date().toISOString();
       emailedTo = mailed.to;
-    } else if (!agentError) agentError = mailed.reason;
+    } else if (!mailed.ok && !agentError) agentError = mailed.reason;
   } catch (error) {
     agentError = [agentError, error.message].filter(Boolean).join(' · ');
   }

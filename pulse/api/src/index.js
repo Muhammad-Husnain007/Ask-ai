@@ -60,6 +60,7 @@ app.get('/health', async () => ({
     github: Boolean(process.env.GITHUB_TOKEN),
     smtp: Boolean(process.env.SMTP_USER || process.env.GMAIL_USER),
     mailTo: process.env.MAIL_TO || 'mh8169951@gmail.com',
+    sendPrViaEmail: !/^(false|0|no|off)$/i.test(String(process.env.SENDPRVIAEMAIL ?? 'true').trim()),
   },
 }));
 
